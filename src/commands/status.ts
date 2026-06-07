@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot, loadConfig, convertLocalJsonWorkflows } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, loadUnconfiguredCredsCache } from '../config.js';
 import { loadSyncState, calculateHash } from '../sync-state.js';
 import * as output from '../output.js';
 
@@ -104,6 +104,18 @@ export function statusCommand(program: Command) {
 
         const totalChanges = newFiles.length + modifiedFiles.length + deletedFiles.length;
         output.log(`Total: ${totalChanges} changed files (${unchangedFiles.length} unchanged).`);
+
+        // Load and show unconfigured credentials from cache (local-only check)
+        const unconfigured = loadUnconfiguredCredsCache(repoRoot, localDir);
+        if (unconfigured.length > 0) {
+          output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
+          output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
+          for (const cred of unconfigured) {
+            output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
+            output.warn(`    Configure at: ${cred.url}`);
+          }
+          output.warn('----------------------------------------\n');
+        }
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);

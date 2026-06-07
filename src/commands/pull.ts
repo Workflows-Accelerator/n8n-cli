@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { pullReferences } from '../references.js';
@@ -667,6 +667,20 @@ export function pullCommand(program: Command) {
             });
           }
         });
+
+        // Sync credentials with database and check for unconfigured ones
+        if (dbUrl) {
+          const unconfigured = await syncCredentials(repoRoot, config, dbUrl, localDir);
+          if (unconfigured.length > 0) {
+            output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
+            output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
+            for (const cred of unconfigured) {
+              output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
+              output.warn(`    Configure at: ${cred.url}`);
+            }
+            output.warn('----------------------------------------\n');
+          }
+        }
 
         output.log('Pull complete summary:');
         output.log(`  - Created: ${createdCount}`);

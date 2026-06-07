@@ -595,5 +595,191 @@ export function resolveAndConvertTarget(target: string, workflowsDir: string): s
   return targetPath;
 }
 
+export interface UnconfiguredCredential {
+  id: string;
+  name: string;
+  type: string;
+  url: string;
+}
+
+export function generateRandomCredId(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let id = '';
+  for (let i = 0; i < 16; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
+}
+
+export async function syncCredentials(
+  repoRoot: string,
+  config: N8nCliConfig,
+  dbUrl: string,
+  localDir: string = 'n8n'
+): Promise<UnconfiguredCredential[]> {
+  const unconfigured: UnconfiguredCredential[] = [];
+  if (!dbUrl || !config.projectId) {
+    return unconfigured;
+  }
+
+  const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+  if (!fs.existsSync(workflowsDir)) {
+    return unconfigured;
+  }
+
+  const getWorkflowFiles = (dir: string): string[] => {
+    let results: string[] = [];
+    try {
+      const list = fs.readdirSync(dir, { withFileTypes: true });
+      for (const file of list) {
+        const filePath = path.join(dir, file.name);
+        if (file.isDirectory()) {
+          results = results.concat(getWorkflowFiles(filePath));
+        } else if (file.isFile() && file.name.endsWith('.workflow.ts')) {
+          results.push(filePath);
+        }
+      }
+    } catch (e) {}
+    return results;
+  };
+
+  const files = getWorkflowFiles(workflowsDir);
+  const credsToSync = new Map<string, { type: string; name: string; id: string }>();
+
+  const regex = /(\w+)\s*:\s*newCredential\(\s*(['"`])(.*?)\2(?:\s*,\s*(['"`])(.*?)\4)?\s*\)/g;
+
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(file, 'utf-8');
+      let match;
+      while ((match = regex.exec(content)) !== null) {
+        const type = match[1];
+        const name = match[3];
+        const id = match[5] || '';
+        const key = `${type}:${name}:${id}`;
+        credsToSync.set(key, { type, name, id });
+      }
+    } catch (e) {}
+  }
+
+  if (credsToSync.size === 0) {
+    saveUnconfiguredCredsCache(repoRoot, [], localDir);
+    return unconfigured;
+  }
+
+  const pgClient = pg as any;
+  const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;
+  const client = new ClientClass({
+    connectionString: dbUrl,
+    ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+  });
+
+  try {
+    await client.connect();
+
+    const instanceUrl = process.env.N8N_INSTANCE_URL || loadGlobalConfig().environments?.[config.env || 'development']?.instanceUrl || loadGlobalConfig().instanceUrl || 'http://localhost:5678';
+    const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+
+    for (const [_, cred] of credsToSync) {
+      let res;
+      if (cred.id) {
+        res = await client.query(
+          `SELECT id, name, type, data FROM credentials_entity WHERE id = $1;`,
+          [cred.id]
+        );
+      } else {
+        res = await client.query(
+          `SELECT c.id, c.name, c.type, c.data
+           FROM credentials_entity c
+           INNER JOIN shared_credentials s ON s."credentialsId" = c.id
+           WHERE c.type = $1 AND c.name = $2 AND s."projectId" = $3;`,
+          [cred.type, cred.name, config.projectId]
+        );
+      }
+
+      let credId = '';
+      let isUnconfigured = false;
+
+      if (res.rows.length > 0) {
+        const row = res.rows[0];
+        credId = row.id;
+
+        // Ensure shared record exists
+        const shareRes = await client.query(
+          `SELECT * FROM shared_credentials WHERE "credentialsId" = $1 AND "projectId" = $2;`,
+          [credId, config.projectId]
+        );
+        if (shareRes.rows.length === 0) {
+          await client.query(
+            `INSERT INTO shared_credentials ("credentialsId", "projectId", "role", "createdAt", "updatedAt")
+             VALUES ($1, $2, 'credential:owner', NOW(), NOW());`,
+            [credId, config.projectId]
+          );
+        }
+
+        if (!row.data || row.data.trim() === '' || row.data === '{}') {
+          isUnconfigured = true;
+        }
+      } else {
+        credId = cred.id || generateRandomCredId();
+        
+        await client.query(
+          `INSERT INTO credentials_entity (id, name, type, data, "createdAt", "updatedAt", "isManaged", "isGlobal", "isResolvable", "resolvableAllowFallback")
+           VALUES ($1, $2, $3, $4, NOW(), NOW(), false, false, false, false);`,
+          [credId, cred.name, cred.type, '']
+        );
+
+        await client.query(
+          `INSERT INTO shared_credentials ("credentialsId", "projectId", "role", "createdAt", "updatedAt")
+           VALUES ($1, $2, 'credential:owner', NOW(), NOW());`,
+          [credId, config.projectId]
+        );
+
+        output.log(`Created credential placeholder in DB: '${cred.name}' (type: ${cred.type}, ID: ${credId})`);
+        isUnconfigured = true;
+      }
+
+      if (isUnconfigured) {
+        const url = `${cleanInstanceUrl}/projects/${config.projectId}/credentials/${credId}?uiContext=credentials_list`;
+        unconfigured.push({
+          id: credId,
+          name: cred.name,
+          type: cred.type,
+          url
+        });
+      }
+    }
+  } catch (err) {
+    output.warn(`Failed to sync credentials with database: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    try {
+      await client.end();
+    } catch (e) {}
+  }
+
+  saveUnconfiguredCredsCache(repoRoot, unconfigured, localDir);
+  return unconfigured;
+}
+
+export function saveUnconfiguredCredsCache(repoRoot: string, cache: UnconfiguredCredential[], localDir: string = 'n8n') {
+  const cacheDir = path.join(repoRoot, localDir, 'config');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  const cachePath = path.join(cacheDir, 'unconfigured-credentials.json');
+  fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
+}
+
+export function loadUnconfiguredCredsCache(repoRoot: string, localDir: string = 'n8n'): UnconfiguredCredential[] {
+  const cachePath = path.join(repoRoot, localDir, 'config', 'unconfigured-credentials.json');
+  if (fs.existsSync(cachePath)) {
+    try {
+      return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    } catch (e) {}
+  }
+  return [];
+}
+
+
 
 

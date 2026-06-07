@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import pg from 'pg';
-import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
@@ -674,6 +674,20 @@ export function pushCommand(program: Command) {
           syncState.folders = Array.from(activeFolderIds);
           saveSyncState(repoRoot, syncState, localDir);
         });
+
+        // Sync credentials with database and check for unconfigured ones
+        if (dbUrl) {
+          const unconfigured = await syncCredentials(repoRoot, config, dbUrl, localDir);
+          if (unconfigured.length > 0) {
+            output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
+            output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
+            for (const cred of unconfigured) {
+              output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
+              output.warn(`    Configure at: ${cred.url}`);
+            }
+            output.warn('----------------------------------------\n');
+          }
+        }
 
         output.log('Push complete.');
         if (hasConflicts) {

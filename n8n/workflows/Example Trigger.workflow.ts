@@ -4,13 +4,7 @@ const when_Clicking_Execute_Workflow = trigger({
   config: { name: 'When Clicking Execute Workflow', position: [100, 300] }
 });
 
-const wf = workflow('KJHvf5E2uuo9Zfam', 'Example Trigger', {
-  description: 'Example workflow showing how a manual trigger and a sticky note are defined.',
-  executionOrder: 'v1',
-  binaryMode: 'separate',
-  availableInMCP: true,
-  callerPolicy: 'workflowsFromSameOwner'
-});
+const wf = workflow('KJHvf5E2uuo9Zfam', 'Example Trigger', { description: 'An example manual trigger workflow.', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true, callerPolicy: 'workflowsFromSameOwner' });
 
 export default wf
   .add(when_Clicking_Execute_Workflow)
