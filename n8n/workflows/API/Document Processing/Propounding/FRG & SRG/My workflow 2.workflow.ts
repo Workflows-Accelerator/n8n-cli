@@ -1,4 +1,0 @@
-const wf = workflow('nplfril1UNTXXGee', 'My Workflow 2', { executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true });
-
-export default wf
-  .add(sticky('Check for case information\n\nIf no case information, extract:\n- plaintiffs\n- case name\n- defense adress\n- defense counsel, etc.\n', [], { name: 'Sticky Note', height: 176, position: [-352, -144] }))

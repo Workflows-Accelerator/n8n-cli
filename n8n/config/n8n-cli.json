@@ -3,12 +3,6 @@
   "localDir": "n8n",
   "projectId": "5U5vIHIc1Ug5eVLK",
   "projectName": "Workflows Accelerator <n8n@workflows.ac>",
-  "folderId": "Nz4UtQWrmrHMcZIE",
-  "folderName": "Case Management Platform",
-  "references": {
-    "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
-    "folderId": "3JiyzwujIPklu0w8",
-    "folderName": "AI Examples"
-  }
+  "folderId": "3JiyzwujIPklu0w8",
+  "folderName": "AI Examples"
 }
