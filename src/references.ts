@@ -5,6 +5,8 @@ import { generateWorkflowCode, parseWorkflowCode } from '@n8n/workflow-sdk';
 import { McpClient } from './mcp-client.js';
 import { N8nCliConfig, buildFolderPaths, getWorkflowDetails } from './config.js';
 import * as output from './output.js';
+import { glob } from 'glob';
+import { calculateHash } from './sync-state.js';
 
 export interface ReferenceWorkflowInfo {
   name: string;
@@ -31,9 +33,6 @@ export async function pullReferences(
   output.log(`Pulling reference workflows from project: ${config.references.projectName}...`);
 
   const referencesDir = path.join(repoRoot, 'n8n', 'references');
-  if (fs.existsSync(referencesDir)) {
-    fs.rmSync(referencesDir, { recursive: true, force: true });
-  }
   fs.mkdirSync(referencesDir, { recursive: true });
 
   let folderPaths: Record<string, string> = {};
@@ -87,13 +86,12 @@ export async function pullReferences(
     }
 
     const workflowInfos: ReferenceWorkflowInfo[] = [];
+    const activeRefPaths = new Set<string>();
 
     // Helper to clean up filenames
     const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
     for (const { w, details, folderId: wFolderId } of targetWorkflows) {
-      output.log(`  Pulling reference: ${details.name}...`);
-      
       try {
         // Convert JSON to TS code
         const tsCode = generateWorkflowCode(details);
@@ -102,13 +100,28 @@ export async function pullReferences(
         const folderSubdir = wFolderId ? (folderPaths[wFolderId] || '') : '';
 
         const targetDir = folderSubdir ? path.join(referencesDir, folderSubdir) : referencesDir;
-        fs.mkdirSync(targetDir, { recursive: true });
-
         const filename = `${sanitizeFilename(details.name)}.workflow.ts`;
         const relativeFilePath = folderSubdir ? `${folderSubdir}/${filename}` : filename;
         const fullPath = path.join(targetDir, filename);
 
-        fs.writeFileSync(fullPath, tsCode, 'utf-8');
+        activeRefPaths.add(relativeFilePath.replace(/\\/g, '/'));
+
+        const newHash = calculateHash(tsCode);
+        const localExists = fs.existsSync(fullPath);
+        const localContent = localExists ? fs.readFileSync(fullPath, 'utf-8') : '';
+        const localHash = localExists ? calculateHash(localContent) : '';
+
+        if (localExists && localHash === newHash) {
+          // Unchanged, skip writing
+        } else {
+          if (!localExists) {
+            output.log(`  [CREATED] Reference: ${relativeFilePath}`);
+          } else {
+            output.log(`  [UPDATED] Reference: ${relativeFilePath}`);
+          }
+          fs.mkdirSync(targetDir, { recursive: true });
+          fs.writeFileSync(fullPath, tsCode, 'utf-8');
+        }
 
         // Extract description
         let description = details.description || '';
@@ -130,6 +143,36 @@ export async function pullReferences(
       } catch (err) {
         output.warn(`Failed to pull reference workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+
+    // Clean up local reference files that are no longer in scope
+    try {
+      const localFiles = glob.sync('**/*.workflow.ts', { cwd: referencesDir });
+      for (const localFile of localFiles) {
+        const normalizedPath = localFile.replace(/\\/g, '/');
+        if (!activeRefPaths.has(normalizedPath)) {
+          const fullPath = path.join(referencesDir, normalizedPath);
+          output.log(`  [DELETED] Reference: ${normalizedPath} (no longer in scope)`);
+          fs.unlinkSync(fullPath);
+
+          // Clean up empty directories
+          try {
+            let dir = path.dirname(fullPath);
+            while (dir !== referencesDir) {
+              if (fs.readdirSync(dir).length === 0) {
+                fs.rmdirSync(dir);
+                dir = path.dirname(dir);
+              } else {
+                break;
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    } catch (e) {
+      // ignore
     }
 
     // 2. Write index.yaml

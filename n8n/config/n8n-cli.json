@@ -1,13 +1,13 @@
 {
-  "instanceUrl": "https://n8n.parris.app",
-  "environmentName": "development",
+  "env": "PARRIS",
   "projectId": "5U5vIHIc1Ug5eVLK",
-  "projectName": "Personal",
+  "projectName": "Workflows Accelerator <n8n@workflows.ac>",
   "folderId": "Nz4UtQWrmrHMcZIE",
-  "mcpServerCommand": "npx -y n8n-mcp",
+  "folderName": "Case Management Platform",
   "references": {
     "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "References",
-    "folderId": "3JiyzwujIPklu0w8"
+    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
+    "folderId": "3JiyzwujIPklu0w8",
+    "folderName": "AI Examples"
   }
 }

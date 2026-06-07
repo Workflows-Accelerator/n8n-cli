@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { findRepoRoot, loadConfig } from './config.js';
+import { findRepoRoot, loadConfig, loadGlobalConfig } from './config.js';
 
 export function splitCommandString(cmdStr: string): { command: string; args: string[] } {
   // Regex to split command string by space, while keeping quoted substrings together
@@ -32,11 +32,8 @@ export class McpClient {
       instanceUrl = commandStr;
     } else {
       try {
-        const repoRoot = findRepoRoot();
-        if (repoRoot) {
-          const config = loadConfig(repoRoot);
-          instanceUrl = config.instanceUrl;
-        }
+        const globalConfig = loadGlobalConfig();
+        instanceUrl = globalConfig.instanceUrl;
       } catch (err) {
         // Ignore
       }

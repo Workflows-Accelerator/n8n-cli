@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo, buildFolderPaths, validateCookie, fetchWorkflowsWithCookie, saveCookieToEnv, loadFolderCache, saveFolderCache, getWorkflowDetails } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { pullReferences } from '../references.js';
@@ -139,7 +139,9 @@ export function pullCommand(program: Command) {
     .option('--skip-references', 'skip pulling reference workflows', false)
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
-    .option('--cookie <cookie>', 'provide a new n8n auth cookie to update settings and sync folders')
+    .option('--api-key <key>', 'override n8n REST API key')
+    .option('--url <url>', 'override n8n instance URL')
+    .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
     .action(async (options) => {
       let mainMcpCache: Record<string, boolean> = {};
       let refMcpCache: Record<string, boolean> = {};
@@ -158,6 +160,8 @@ export function pullCommand(program: Command) {
         repoRoot = connectionInfo.repoRoot;
         mcpCommand = connectionInfo.mcpCommand;
         accessToken = connectionInfo.accessToken;
+        apiKey = connectionInfo.apiKey;
+        instanceUrl = connectionInfo.instanceUrl;
         const config = connectionInfo.config;
 
         if (!config || !repoRoot) {
@@ -168,51 +172,41 @@ export function pullCommand(program: Command) {
         folderId = config.folderId;
         refProjId = config.references?.projectId || '';
         refFolderId = config.references?.folderId;
-        instanceUrl = config.instanceUrl;
-        apiKey = process.env.N8N_API_KEY || '';
 
         // Load folder cache
         let folderCache = loadFolderCache(repoRoot);
 
-        // Determine which cookie to use
-        let cookie = options.cookie || process.env.N8N_COOKIE || '';
-        let cookieValid = false;
+        // Resolve PostgreSQL Database URL
+        const globalConfig = loadGlobalConfig();
+        const dbUrl = options.dbUrl || process.env.N8N_DB_URL || globalConfig.dbUrl || '';
 
-        if (cookie) {
-          output.log('Validating N8N_COOKIE...');
-          cookieValid = await validateCookie(instanceUrl, cookie);
-          if (cookieValid) {
-            output.log('N8N_COOKIE is active. Fetching workflow-to-folder relationships...');
-            const internalWorkflows = await fetchWorkflowsWithCookie(instanceUrl, cookie);
-            if (internalWorkflows) {
+        if (dbUrl) {
+          output.log('Database URL configured. Fetching workflow-to-folder relationships from PostgreSQL...');
+          try {
+            const dbWorkflows = await fetchWorkflowsWithDb(dbUrl);
+            if (dbWorkflows) {
               const newCache: Record<string, string | null> = {};
-              for (const w of internalWorkflows) {
-                newCache[w.id] = w.parentFolderId || w.folderId || null;
+              for (const w of dbWorkflows) {
+                newCache[w.id] = w.parentFolderId || null;
               }
               folderCache = newCache;
               saveFolderCache(repoRoot, folderCache);
-              output.log(`Successfully updated folder cache with ${Object.keys(folderCache).length} mappings.`);
-
-              // Save new cookie to .env if provided via CLI
-              if (options.cookie) {
-                saveCookieToEnv(repoRoot, options.cookie);
-                output.log('Saved new cookie to .env file.');
-              }
+              output.log(`Successfully updated folder cache from database with ${Object.keys(folderCache).length} mappings.`);
             } else {
-              output.warn('Active session returned no workflows. Folder cache not updated.');
+              output.warn('Database query returned no workflows. Folder cache not updated.');
             }
-          } else {
-            output.warn('N8N_COOKIE is invalid or expired. Folder structures might be out of date.');
-            if (options.cookie) {
-              output.error('The provided --cookie was rejected by the server.');
-            }
+          } catch (dbErr) {
+            const dbErrMsg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+            output.warn(`Failed to sync folder mappings from database: ${dbErrMsg}`);
+            output.warn('Proceeding with existing cached folder mappings...');
           }
         } else {
-          output.warn('N8N_COOKIE is missing. Folder structures might be out of date. You can provide a valid session cookie using --cookie.');
+          output.warn('N8N_DB_URL is missing. Folder structures might be out of date.');
+          output.log('Tip: You can set a global database connection URL using: n8ncli init --db-url="postgresql://user:pass@host/db"');
         }
 
         if (!apiKey) {
-          throw new Error('N8N_API_KEY is not defined in the .env file. It is required to manage MCP settings on your n8n instance.');
+          throw new Error('N8N_API_KEY is not defined in the environment or global configuration. It is required to manage MCP settings on your n8n instance.');
         }
 
         output.log(`Pulling workflows for project '${config.projectName}'...`);

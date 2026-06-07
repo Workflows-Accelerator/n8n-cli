@@ -27,10 +27,12 @@
     "commander": "^12.1.0",
     "dotenv": "^16.4.5",
     "glob": "^11.0.0",
+    "pg": "^8.21.0",
     "yaml": "^2.6.1"
   },
   "devDependencies": {
     "@types/node": "^20.17.9",
+    "@types/pg": "^8.20.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

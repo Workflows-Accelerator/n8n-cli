@@ -23,6 +23,7 @@ program
   .description('AI-First n8n Workflow CLI')
   .version('1.0.0')
   .option('--verbose', 'enable verbose logging', false)
+  .option('--env <name>', 'specify environment name')
   .hook('preAction', (thisCommand, actionCommand) => {
     // Set verbose mode if --verbose flag was passed to either main program or subcommand
     const verbose = !!(thisCommand.opts().verbose || actionCommand.opts().verbose);

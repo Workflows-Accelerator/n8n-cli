@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { saveConfig, N8nCliConfig } from '../config.js';
+import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 
@@ -9,9 +9,10 @@ export function initCommand(program: Command) {
   program
     .command('init')
     .description('Initialize n8n CLI configuration in the current repository')
-    .requiredOption('--url <url>', 'n8n instance URL (e.g., https://n8n.example.com)')
-    .requiredOption('--access-token <token>', 'n8n access token')
+    .option('--url <url>', 'n8n instance URL (e.g., https://n8n.example.com)')
+    .option('--access-token <token>', 'n8n access token')
     .option('--api-key <key>', 'n8n REST API key')
+    .option('--db-url <url>', 'n8n PostgreSQL database connection URL (stored globally)')
     .option('--env <name>', 'environment name (e.g., development, production)', 'development')
     .option('--project-id <id>', 'n8n project ID to sync with')
     .option('--folder-id <id>', 'n8n folder ID to sync with')
@@ -21,7 +22,51 @@ export function initCommand(program: Command) {
     .action(async (options) => {
       const repoRoot = process.cwd();
 
-      output.log('Initializing n8ncli in current repository...');
+      let envName = '';
+      const envArgIndex = process.argv.indexOf('--env');
+      if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+        envName = process.argv[envArgIndex + 1];
+      } else {
+        const envArg = process.argv.find(arg => arg.startsWith('--env='));
+        if (envArg) {
+          envName = envArg.split('=')[1];
+        }
+      }
+      if (!envName) {
+        envName = options.env || 'development';
+      }
+      output.log(`Initializing n8ncli in current repository for environment '${envName}'...`);
+
+      // Load global config to check for existing credentials in the selected environment
+      const globalConfig = loadGlobalConfig();
+      const envConfig = globalConfig.environments?.[envName] || {};
+      
+      const instanceUrl = options.url || envConfig.instanceUrl || globalConfig.instanceUrl;
+      const accessToken = options.accessToken || envConfig.accessToken || globalConfig.accessToken;
+      const apiKey = options.apiKey || envConfig.apiKey || globalConfig.apiKey;
+      const dbUrl = options.dbUrl || envConfig.dbUrl || globalConfig.dbUrl;
+      const mcpCommand = options.mcpCommand || envConfig.mcpCommand || globalConfig.mcpCommand || 'n8n mcp';
+
+      if (!instanceUrl) {
+        output.error('Error: n8n instance URL is required. Provide it via --url flag or configure it globally.');
+        process.exit(1);
+      }
+
+      if (!accessToken) {
+        output.error('Error: n8n access token is required. Provide it via --access-token flag or configure it globally.');
+        process.exit(1);
+      }
+
+      // Save global configs under the selected environment name
+      const globalUpdates: any = {};
+      globalUpdates.instanceUrl = instanceUrl;
+      globalUpdates.mcpCommand = mcpCommand;
+      if (dbUrl) globalUpdates.dbUrl = dbUrl;
+      if (accessToken) globalUpdates.accessToken = accessToken;
+      if (apiKey) globalUpdates.apiKey = apiKey;
+      
+      saveGlobalConfig(globalUpdates, envName);
+      output.log(`Saved global system-level configurations for environment '${envName}'.`);
 
       // 1. Create directories
       const configDir = path.join(repoRoot, 'n8n', 'config');
@@ -31,26 +76,6 @@ export function initCommand(program: Command) {
       fs.mkdirSync(configDir, { recursive: true });
       fs.mkdirSync(workflowsDir, { recursive: true });
       fs.mkdirSync(referencesDir, { recursive: true });
-
-      // 2. Append/Write .env
-      const envPath = path.join(repoRoot, '.env');
-      let envContent = '';
-      if (fs.existsSync(envPath)) {
-        envContent = fs.readFileSync(envPath, 'utf-8');
-      }
-
-      const envLines = [];
-      if (!envContent.includes('N8N_ACCESS_TOKEN')) {
-        envLines.push(`N8N_ACCESS_TOKEN=${options.accessToken}`);
-      }
-      if (options.apiKey && !envContent.includes('N8N_API_KEY')) {
-        envLines.push(`N8N_API_KEY=${options.apiKey}`);
-      }
-
-      if (envLines.length > 0) {
-        fs.appendFileSync(envPath, `\n# n8ncli configurations\n${envLines.join('\n')}\n`, 'utf-8');
-        output.log('Updated .env file with n8n credentials.');
-      }
 
       // 3. Update .gitignore
       const gitignorePath = path.join(repoRoot, '.gitignore');
@@ -83,11 +108,11 @@ export function initCommand(program: Command) {
 
       try {
         output.log('Verifying connection with n8n instance...');
-        await withMcp(options.mcpCommand, options.accessToken, async (mcp) => {
+        await withMcp(mcpCommand, accessToken, async (mcp) => {
           // Resolve project names if IDs provided
           if (options.projectId) {
             const projects = await mcp.callToolAndGetJson('search_projects', {});
-            const projList = Array.isArray(projects) ? projects : (projects.projects || []);
+            const projList = Array.isArray(projects) ? projects : (projects.projects || projects.data || []);
             const matchedProj = projList.find((p: any) => p.id === options.projectId);
             if (matchedProj) {
               projectName = matchedProj.name;
@@ -97,7 +122,7 @@ export function initCommand(program: Command) {
 
             if (options.folderId) {
               const folders = await mcp.callToolAndGetJson('search_folders', { projectId: options.projectId });
-              const folderList = Array.isArray(folders) ? folders : (folders.folders || []);
+              const folderList = Array.isArray(folders) ? folders : (folders.folders || folders.data || []);
               const matchedFolder = folderList.find((f: any) => f.id === options.folderId);
               if (matchedFolder) {
                 folderName = matchedFolder.name;
@@ -110,7 +135,7 @@ export function initCommand(program: Command) {
           // Resolve reference project names if IDs provided
           if (options.refProjectId) {
             const projects = await mcp.callToolAndGetJson('search_projects', {});
-            const projList = Array.isArray(projects) ? projects : (projects.projects || []);
+            const projList = Array.isArray(projects) ? projects : (projects.projects || projects.data || []);
             const matchedProj = projList.find((p: any) => p.id === options.refProjectId);
             if (matchedProj) {
               refProjectName = matchedProj.name;
@@ -120,7 +145,7 @@ export function initCommand(program: Command) {
 
             if (options.refFolderId) {
               const folders = await mcp.callToolAndGetJson('search_folders', { projectId: options.refProjectId });
-              const folderList = Array.isArray(folders) ? folders : (folders.folders || []);
+              const folderList = Array.isArray(folders) ? folders : (folders.folders || folders.data || []);
               const matchedFolder = folderList.find((f: any) => f.id === options.refFolderId);
               if (matchedFolder) {
                 refFolderName = matchedFolder.name;
@@ -138,13 +163,11 @@ export function initCommand(program: Command) {
 
       // 5. Write config file
       const config: N8nCliConfig = {
-        instanceUrl: options.url,
-        environmentName: options.env,
+        env: envName,
         projectId: options.projectId || 'personal',
         projectName,
         folderId: options.folderId,
         folderName,
-        mcpServerCommand: options.mcpCommand,
       };
 
       if (options.refProjectId) {

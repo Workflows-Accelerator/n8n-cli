@@ -22,7 +22,7 @@ export function projectsCommand(program: Command) {
             limit: options.limit,
           });
 
-          let projects = Array.isArray(response) ? response : (response.projects || []);
+          let projects = Array.isArray(response) ? response : (response.projects || response.data || []);
 
           if (options.type) {
             projects = projects.filter((p: any) => p.type === options.type);

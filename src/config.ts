@@ -1,16 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import os from 'os';
+import pg from 'pg';
 import * as output from './output.js';
 
 export interface N8nCliConfig {
-  instanceUrl: string;
-  environmentName: string;
+  env?: string;
+  environmentName?: string;
   projectId: string;
   projectName: string;
   folderId?: string;
   folderName?: string;
-  mcpServerCommand?: string; // e.g. "n8n mcp" or custom command
   references?: {
     projectId: string;
     projectName: string;
@@ -38,7 +39,7 @@ export function findRepoRoot(startDir: string = process.cwd()): string | null {
 export function loadEnv(repoRoot: string) {
   const envPath = path.join(repoRoot, '.env');
   if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath });
+    dotenv.config({ path: envPath, override: true });
   }
 }
 
@@ -70,9 +71,11 @@ export interface ConnectionInfo {
   accessToken: string;
   config: N8nCliConfig | null;
   repoRoot: string | null;
+  apiKey: string;
+  instanceUrl: string;
 }
 
-export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string } = {}): ConnectionInfo {
+export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string } = {}): ConnectionInfo {
   const repoRoot = findRepoRoot();
   if (repoRoot) {
     loadEnv(repoRoot);
@@ -83,26 +86,47 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     }
   }
 
-  let mcpCommand = options.mcpCommand || process.env.N8N_MCP_COMMAND;
-  let accessToken = options.accessToken || process.env.N8N_ACCESS_TOKEN;
   let config: N8nCliConfig | null = null;
-
   if (repoRoot) {
     try {
       config = loadConfig(repoRoot);
-      if (!mcpCommand) {
-        mcpCommand = config.mcpServerCommand;
-      }
     } catch (err) {
       // Ignore
     }
   }
 
-  mcpCommand = mcpCommand || 'n8n mcp';
-  
+  const globalConfig = loadGlobalConfig();
+  let envKey = options.env;
+  if (!envKey) {
+    const envArgIndex = process.argv.indexOf('--env');
+    if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+      envKey = process.argv[envArgIndex + 1];
+    } else {
+      const envArg = process.argv.find(arg => arg.startsWith('--env='));
+      if (envArg) {
+        envKey = envArg.split('=')[1];
+      }
+    }
+  }
+  if (!envKey) {
+    envKey = config?.env || config?.environmentName || 'development';
+  }
+  const envConfig = globalConfig.environments?.[envKey] || {};
+
+  let mcpCommand = options.mcpCommand || process.env.N8N_MCP_COMMAND || envConfig.mcpCommand || globalConfig.mcpCommand || 'n8n mcp';
+  let accessToken = options.accessToken || process.env.N8N_ACCESS_TOKEN || envConfig.accessToken || globalConfig.accessToken;
+  let apiKey = options.apiKey || process.env.N8N_API_KEY || envConfig.apiKey || globalConfig.apiKey || '';
+  let instanceUrl = options.url || process.env.N8N_INSTANCE_URL || envConfig.instanceUrl || globalConfig.instanceUrl || '';
+
   if (!accessToken) {
     throw new Error(
-      'n8n access token is required. Set N8N_ACCESS_TOKEN in your .env file, environment, or pass it via --access-token flag.'
+      `n8n access token is required. Set N8N_ACCESS_TOKEN in your environment, global config environments.${envKey}.accessToken, or pass it via --access-token flag.`
+    );
+  }
+
+  if (!instanceUrl) {
+    throw new Error(
+      `n8n instance URL is required. Set N8N_INSTANCE_URL in your environment, global config environments.${envKey}.instanceUrl, or pass it via --url flag.`
     );
   }
 
@@ -111,6 +135,8 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     accessToken,
     config,
     repoRoot,
+    apiKey,
+    instanceUrl,
   };
 }
 
@@ -156,71 +182,6 @@ export function buildFolderPaths(folders: any[], targetFolderId?: string): Recor
     }
   }
   return paths;
-}
-
-export async function validateCookie(instanceUrl: string, cookie: string): Promise<boolean> {
-  const endpoints = ['/rest/workflows', '/rest/active-workflows'];
-  for (const ep of endpoints) {
-    try {
-      const res = await fetch(`${instanceUrl}${ep}`, {
-        headers: {
-          'Cookie': cookie,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (res.status === 200) {
-        return true;
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
-  return false;
-}
-
-export async function fetchWorkflowsWithCookie(instanceUrl: string, cookie: string): Promise<any[] | null> {
-  const endpoints = ['/rest/workflows', '/rest/active-workflows'];
-  for (const ep of endpoints) {
-    try {
-      const res = await fetch(`${instanceUrl}${ep}`, {
-        headers: {
-          'Cookie': cookie,
-          'Content-Type': 'application/json',
-        },
-      });
-      if (res.status === 200) {
-        const data = await res.json();
-        const list = Array.isArray(data) ? data : (data.data || []);
-        if (list.length > 0) {
-          return list;
-        }
-      }
-    } catch (err) {
-      // ignore
-    }
-  }
-  return null;
-}
-
-export function saveCookieToEnv(repoRoot: string, cookieValue: string) {
-  const envPath = path.join(repoRoot, '.env');
-  let content = '';
-  if (fs.existsSync(envPath)) {
-    content = fs.readFileSync(envPath, 'utf-8');
-  }
-  const lines = content.split(/\r?\n/);
-  let found = false;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith('N8N_COOKIE=')) {
-      lines[i] = `N8N_COOKIE=${cookieValue}`;
-      found = true;
-      break;
-    }
-  }
-  if (!found) {
-    lines.push(`N8N_COOKIE=${cookieValue}`);
-  }
-  fs.writeFileSync(envPath, lines.join('\n'), 'utf-8');
 }
 
 export function loadFolderCache(repoRoot: string): Record<string, string | null> {
@@ -294,6 +255,115 @@ export async function getWorkflowDetails(
         continue;
       }
       throw err;
+    }
+  }
+}
+
+export interface GlobalEnvConfig {
+  instanceUrl?: string;
+  mcpCommand?: string;
+  dbUrl?: string;
+  accessToken?: string;
+  apiKey?: string;
+}
+
+export interface GlobalConfig {
+  environments?: Record<string, GlobalEnvConfig>;
+  // Fallbacks for backward compatibility
+  dbUrl?: string;
+  accessToken?: string;
+  apiKey?: string;
+  instanceUrl?: string;
+  mcpCommand?: string;
+}
+
+export function getGlobalConfigPath(): string {
+  return path.join(os.homedir(), '.n8ncli-global.json');
+}
+
+export function loadGlobalConfig(): GlobalConfig {
+  const p = getGlobalConfigPath();
+  if (fs.existsSync(p)) {
+    try {
+      return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch (e) {
+      // ignore
+    }
+  }
+  return {};
+}
+
+export function saveGlobalConfig(config: Partial<GlobalEnvConfig> & Partial<GlobalConfig>, envName?: string) {
+  const p = getGlobalConfigPath();
+  const existing = loadGlobalConfig();
+  
+  if (envName) {
+    if (!existing.environments) {
+      existing.environments = {};
+    }
+    existing.environments[envName] = {
+      ...existing.environments[envName],
+      ...(config as any)
+    };
+  } else {
+    Object.assign(existing, config);
+  }
+  
+  fs.writeFileSync(p, JSON.stringify(existing, null, 2), 'utf-8');
+}
+
+export async function fetchWorkflowsWithDb(dbUrl: string): Promise<any[] | null> {
+  const pgClient = pg as any;
+  const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;
+  const client = new ClientClass({
+    connectionString: dbUrl,
+    ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+  });
+
+  try {
+    await client.connect();
+    
+    // Find schemas and columns dynamically
+    const colsRes = await client.query(`
+      SELECT column_name, table_schema
+      FROM information_schema.columns 
+      WHERE table_name = 'workflow_entity';
+    `);
+    
+    if (colsRes.rows.length === 0) {
+      throw new Error('workflow_entity table not found in database.');
+    }
+    
+    const schema = colsRes.rows[0].table_schema;
+    const cols = colsRes.rows.map((r: any) => r.column_name);
+    
+    let folderCol = '';
+    if (cols.includes('parentFolderId')) {
+      folderCol = 'parentFolderId';
+    } else if (cols.includes('folderId')) {
+      folderCol = 'folderId';
+    } else {
+      const found = cols.find((c: string) => c.toLowerCase().includes('folder'));
+      if (found) {
+        folderCol = found;
+      }
+    }
+    
+    if (!folderCol) {
+      throw new Error('Could not find folder relation column in workflow_entity table.');
+    }
+    
+    const queryStr = `SELECT id, "${folderCol}" AS "parentFolderId" FROM "${schema}"."workflow_entity";`;
+    const res = await client.query(queryStr);
+    return res.rows;
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Failed to query n8n database: ${errMsg}`);
+  } finally {
+    try {
+      await client.end();
+    } catch (e) {
+      // ignore
     }
   }
 }
