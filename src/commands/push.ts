@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { getConnectionInfo } from '../config.js';
+import { getConnectionInfo, buildFolderPaths } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
@@ -205,42 +205,102 @@ export function pushCommand(program: Command) {
           }
 
           // Fetch folder mapping to resolve folder ID
-          let folderMapping: Record<string, string> = {};
+          let folderPaths: Record<string, string> = {};
+          const folderPathToId: Record<string, string> = {};
           if (projectId) {
             try {
               const folders = await mcp.callToolAndGetJson('search_folders', { projectId });
-              const folderList = Array.isArray(folders) ? folders : (folders.folders || []);
-              for (const f of folderList) {
-                folderMapping[f.name.toLowerCase()] = f.id;
+              const folderList = Array.isArray(folders) ? folders : (folders.folders || folders.data || []);
+              folderPaths = buildFolderPaths(folderList, folderId);
+              for (const [fId, fPath] of Object.entries(folderPaths)) {
+                folderPathToId[fPath.toLowerCase()] = fId;
               }
             } catch (err) {
               // ignore
             }
           }
 
-          // B. Handle Renamed Workflows (file renamed on disk first)
+          // B. Handle Renamed or Moved Workflows (file renamed/moved on disk first)
           for (const rename of renamedPaths) {
-            output.log(`Renaming remote workflow: ${rename.name} (${rename.id})...`);
-            try {
-              const code = localCodes[rename.newPath];
-              await mcp.callTool('update_workflow', {
-                workflowId: rename.id,
-                code,
-                name: rename.name,
-              });
+            const folderPart = path.dirname(rename.newPath).replace(/\\/g, '/');
+            let newFolderId = folderId; // default
+            if (folderPart && folderPart !== '.') {
+              newFolderId = folderPathToId[folderPart.toLowerCase()] || folderId;
+            }
 
-              const oldEntry = syncState.workflows[rename.oldPath];
-              delete syncState.workflows[rename.oldPath];
-              syncState.workflows[rename.newPath] = {
-                ...oldEntry,
-                name: rename.name,
-                localPath: rename.newPath,
-                contentHash: localHashes[rename.newPath],
-                remoteUpdatedAt: new Date().toISOString(),
-              };
-              output.log(`  [RENAMED] ${rename.oldPath} -> ${rename.newPath}`);
-            } catch (err) {
-              output.error(`Failed to rename workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
+            const oldEntry = syncState.workflows[rename.oldPath];
+            const oldFolderId = oldEntry ? oldEntry.folderId : undefined;
+            const isMove = oldFolderId !== undefined && oldFolderId !== newFolderId;
+
+            if (isMove) {
+              output.log(`Moving remote workflow: ${rename.name} (from folder ${oldFolderId || 'root'} to ${newFolderId || 'root'})...`);
+              try {
+                const code = localCodes[rename.newPath];
+                const response = await mcp.callTool('create_workflow_from_code', {
+                  code,
+                  projectId,
+                  folderId: newFolderId,
+                });
+
+                let newId = extractIdFromResponse(response);
+                if (!newId) {
+                  newId = await findWorkflowIdByName(mcp, projectId, rename.name);
+                }
+
+                if (!newId) {
+                  throw new Error('Could not retrieve new workflow ID from creation response during move.');
+                }
+
+                // Archive the old workflow ID on n8n
+                output.log(`Archiving old workflow ${rename.id}...`);
+                await mcp.callTool('archive_workflow', {
+                  workflowId: rename.id,
+                });
+
+                // Rewrite the local .workflow.ts file with the new workflow ID!
+                const fullPath = path.join(localWorkflowsDir, rename.newPath);
+                const updatedCode = code.replace(
+                  /(workflow\(\s*['"])[a-zA-Z0-9_-]+(['"])/,
+                  `$1${newId}$2`
+                );
+                fs.writeFileSync(fullPath, updatedCode, 'utf-8');
+
+                delete syncState.workflows[rename.oldPath];
+                syncState.workflows[rename.newPath] = {
+                  id: newId,
+                  name: rename.name,
+                  localPath: rename.newPath,
+                  contentHash: calculateHash(updatedCode),
+                  remoteUpdatedAt: new Date().toISOString(),
+                  folderId: newFolderId,
+                };
+                output.log(`  [MOVED] ${rename.oldPath} -> ${rename.newPath} (New ID: ${newId})`);
+              } catch (err) {
+                output.error(`Failed to move workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
+              }
+            } else {
+              output.log(`Renaming remote workflow: ${rename.name} (${rename.id})...`);
+              try {
+                const code = localCodes[rename.newPath];
+                await mcp.callTool('update_workflow', {
+                  workflowId: rename.id,
+                  code,
+                  name: rename.name,
+                });
+
+                delete syncState.workflows[rename.oldPath];
+                syncState.workflows[rename.newPath] = {
+                  ...oldEntry,
+                  name: rename.name,
+                  localPath: rename.newPath,
+                  contentHash: localHashes[rename.newPath],
+                  remoteUpdatedAt: new Date().toISOString(),
+                  folderId: oldFolderId,
+                };
+                output.log(`  [RENAMED] ${rename.oldPath} -> ${rename.newPath}`);
+              } catch (err) {
+                output.error(`Failed to rename workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
           }
 
@@ -250,15 +310,14 @@ export function pushCommand(program: Command) {
             output.log(`Creating new workflow: ${name}...`);
 
             // Resolve folder ID from path prefix
-            const folderPart = path.dirname(relPath);
+            const folderPart = path.dirname(relPath).replace(/\\/g, '/');
             let targetFolderId = folderId; // default to configuration folder ID
             if (folderPart && folderPart !== '.') {
-              const folderNameClean = folderPart.split('/')[0];
-              const resolvedId = folderMapping[folderNameClean.toLowerCase()];
+              const resolvedId = folderPathToId[folderPart.toLowerCase()];
               if (resolvedId) {
                 targetFolderId = resolvedId;
               } else {
-                output.warn(`Folder '${folderNameClean}' not found on remote. Creating workflow at project root.`);
+                output.warn(`Folder path '${folderPart}' not found on remote. Creating workflow at project root.`);
               }
             }
 

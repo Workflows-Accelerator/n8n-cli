@@ -1,0 +1,62 @@
+{
+  "name": "n8n-mcp",
+  "version": "2.57.1",
+  "description": "Integration between n8n workflow automation and Model Context Protocol (MCP)",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.20.1",
+    "@supabase/supabase-js": "^2.57.4",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.1.5",
+    "dotenv": "^16.5.0",
+    "ipaddr.js": "^1.9.1",
+    "lru-cache": "^11.2.1",
+    "sql.js": "^1.13.0",
+    "tslib": "^2.6.2",
+    "uuid": "^10.0.0",
+    "axios": "^1.7.7"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.10.0"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "n8n-mcp": "./dist/mcp/stdio-wrapper.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/czlonkowski/n8n-mcp.git"
+  },
+  "keywords": [
+    "n8n",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "workflow",
+    "automation"
+  ],
+  "author": "Romuald Czlonkowski @ www.aiadvisors.pl/en",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/czlonkowski/n8n-mcp/issues"
+  },
+  "homepage": "https://github.com/czlonkowski/n8n-mcp#readme",
+  "files": [
+    "dist/**/*",
+    "ui-apps/dist/**/*",
+    "data/nodes.db",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ]
+}

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import * as output from './output.js';
 
 export interface N8nCliConfig {
   instanceUrl: string;
@@ -156,4 +157,146 @@ export function buildFolderPaths(folders: any[], targetFolderId?: string): Recor
   }
   return paths;
 }
+
+export async function validateCookie(instanceUrl: string, cookie: string): Promise<boolean> {
+  const endpoints = ['/rest/workflows', '/rest/active-workflows'];
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(`${instanceUrl}${ep}`, {
+        headers: {
+          'Cookie': cookie,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (res.status === 200) {
+        return true;
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  return false;
+}
+
+export async function fetchWorkflowsWithCookie(instanceUrl: string, cookie: string): Promise<any[] | null> {
+  const endpoints = ['/rest/workflows', '/rest/active-workflows'];
+  for (const ep of endpoints) {
+    try {
+      const res = await fetch(`${instanceUrl}${ep}`, {
+        headers: {
+          'Cookie': cookie,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (res.status === 200) {
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.data || []);
+        if (list.length > 0) {
+          return list;
+        }
+      }
+    } catch (err) {
+      // ignore
+    }
+  }
+  return null;
+}
+
+export function saveCookieToEnv(repoRoot: string, cookieValue: string) {
+  const envPath = path.join(repoRoot, '.env');
+  let content = '';
+  if (fs.existsSync(envPath)) {
+    content = fs.readFileSync(envPath, 'utf-8');
+  }
+  const lines = content.split(/\r?\n/);
+  let found = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('N8N_COOKIE=')) {
+      lines[i] = `N8N_COOKIE=${cookieValue}`;
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    lines.push(`N8N_COOKIE=${cookieValue}`);
+  }
+  fs.writeFileSync(envPath, lines.join('\n'), 'utf-8');
+}
+
+export function loadFolderCache(repoRoot: string): Record<string, string | null> {
+  const cachePath = path.join(repoRoot, 'n8n', 'config', 'workflow-folders.json');
+  if (fs.existsSync(cachePath)) {
+    try {
+      return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+    } catch (e) {
+      // ignore
+    }
+  }
+  return {};
+}
+
+export function saveFolderCache(repoRoot: string, cache: Record<string, string | null>) {
+  const cacheDir = path.join(repoRoot, 'n8n', 'config');
+  if (!fs.existsSync(cacheDir)) {
+    fs.mkdirSync(cacheDir, { recursive: true });
+  }
+  const cachePath = path.join(cacheDir, 'workflow-folders.json');
+  fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
+}
+
+export async function getWorkflowDetails(
+  mcp: any,
+  instanceUrl: string,
+  apiKey: string,
+  workflowId: string,
+  retries = 2
+): Promise<any> {
+  if (apiKey && instanceUrl) {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(`${instanceUrl}/api/v1/workflows/${workflowId}`, {
+          headers: {
+            'X-N8N-API-KEY': apiKey,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (res.ok) {
+          return await res.json();
+        }
+        if (res.status === 429 && attempt < retries) {
+          output.warn(`Rate limit on REST API details for ${workflowId}. Retrying in 2 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      } catch (err) {
+        if (attempt < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+      }
+    }
+  }
+
+  // Fallback to MCP
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const detailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+        workflowId,
+        id: workflowId,
+      });
+      return detailsRes.workflow || detailsRes;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if ((errMsg.includes('Too many requests') || errMsg.includes('429')) && attempt < retries) {
+        output.warn(`Rate limit on MCP details for ${workflowId}. Retrying in 2 seconds...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+
 

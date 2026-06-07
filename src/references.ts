@@ -3,7 +3,7 @@ import path from 'path';
 import YAML from 'yaml';
 import { generateWorkflowCode, parseWorkflowCode } from '@n8n/workflow-sdk';
 import { McpClient } from './mcp-client.js';
-import { N8nCliConfig, buildFolderPaths } from './config.js';
+import { N8nCliConfig, buildFolderPaths, getWorkflowDetails } from './config.js';
 import * as output from './output.js';
 
 export interface ReferenceWorkflowInfo {
@@ -12,7 +12,14 @@ export interface ReferenceWorkflowInfo {
   description: string;
 }
 
-export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoRoot: string) {
+export async function pullReferences(
+  mcp: McpClient,
+  config: N8nCliConfig,
+  repoRoot: string,
+  folderCache: Record<string, string | null> = {},
+  instanceUrl: string = '',
+  apiKey: string = ''
+) {
   if (!config.references || !config.references.projectId) {
     output.debug('No reference project configured. Skipping reference pull.');
     return;
@@ -55,18 +62,20 @@ export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoR
     // Fetch details of all reference workflows and filter by folder
     const targetWorkflows = [];
     for (const w of availableWorkflows) {
+      if (w.isArchived) continue;
       try {
-        const detailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
-          workflowId: w.id,
-          id: w.id,
-        });
-        const details = detailsRes.workflow || detailsRes;
-        const wFolderId = details.parentFolderId || details.folderId;
+        const details = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
+        
+        let wFolderId = folderCache[w.id];
+        if (wFolderId === undefined) {
+          wFolderId = details.parentFolderId || details.folderId || null;
+        }
 
-        if (refFolderId && wFolderId !== refFolderId) {
+        const isInScope = !refFolderId || (wFolderId === refFolderId) || (wFolderId && folderPaths[wFolderId] !== undefined);
+        if (!isInScope) {
           continue;
         }
-        targetWorkflows.push(details);
+        targetWorkflows.push({ w, details, folderId: wFolderId });
       } catch (err) {
         output.warn(`Failed to fetch details for reference workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -82,7 +91,7 @@ export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoR
     // Helper to clean up filenames
     const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
-    for (const details of targetWorkflows) {
+    for (const { w, details, folderId: wFolderId } of targetWorkflows) {
       output.log(`  Pulling reference: ${details.name}...`);
       
       try {
@@ -90,7 +99,6 @@ export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoR
         const tsCode = generateWorkflowCode(details);
 
         // Determine directory based on folder names or folder hierarchy
-        const wFolderId = details.parentFolderId || details.folderId;
         const folderSubdir = wFolderId ? (folderPaths[wFolderId] || '') : '';
 
         const targetDir = folderSubdir ? path.join(referencesDir, folderSubdir) : referencesDir;
