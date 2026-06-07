@@ -4,7 +4,9 @@ An optimized TypeScript CLI tool that wraps n8n MCP server tools into fast, toke
 
 ## Key Features
 
-- **Workflow as Code:** Sync workflows as TypeScript files using the official `@n8n/workflow-sdk` builder format.
+- **Workflow as Code:** Sync workflows as TypeScript files using the official `@n8n/workflow-sdk` builder format. Supports automatic conversion of local `.json` workflow files to `.workflow.ts`.
+- **Database-Backed Folder Synchronization**: Directly syncs folder structures to the remote PostgreSQL database on `push` (supporting creates, moves/renames, and deletions of empty folders), with retention safety rules on `pull`.
+- **Multi-Environment Management**: Configures and switches between multiple environments (e.g. `PARRIS`) defined machine-wide in `~/.n8ncli-global.json`.
 - **Fast Local Validation:** Validate workflows locally using schema checkers without connecting to the n8n instance.
 - **Git-friendly Sync:** Pull remote workflows (`pull`), inspect modifications (`status` and `diff`), and push changes (`push`) with built-in conflict detection.
 - **Curated References Library:** Automatically pull and cache workflows from a designated reference project to help AI agents learn patterns and reuse components.
@@ -45,13 +47,16 @@ n8ncli init \
   --url https://your-n8n-instance.com \
   --access-token <your-token> \
   --project-id <your-project-id> \
-  --ref-project-id <optional-reference-project-id>
+  --ref-project-id <optional-reference-project-id> \
+  --db-url <optional-postgresql-db-url> \
+  --env PARRIS
 ```
 This command creates:
-- `n8n/config/n8n-cli.json` (sync settings)
+- `n8n/config/n8n-cli.json` (sync settings pointing to the `PARRIS` environment)
 - `n8n/workflows/` (your workflow code files)
 - `n8n/references/` (reference workflows cache)
 - Configures `.gitignore` to keep credentials and local sync cache out of version control.
+- Saves connection credentials globally under the `PARRIS` key inside `~/.n8ncli-global.json`.
 
 ### 3. Pull Workflows
 Download remote workflows and convert them to TypeScript:
@@ -66,7 +71,7 @@ n8ncli status
 ```
 
 ### 5. Push Changes
-Deploy your local TypeScript workflow code modifications back to the n8n instance:
+Deploy your local TypeScript workflow code modifications and folder structures back to the n8n instance:
 ```bash
 n8ncli push
 ```
@@ -76,13 +81,13 @@ n8ncli push
 ## Command Reference
 
 ### Scaffolding & Configuration
-- `n8ncli init`: Setup configuration, `.gitignore`, and `.env` credentials.
+- `n8ncli init`: Setup configuration, `.gitignore`, and `.env` credentials. Saves credentials globally.
 - `n8ncli projects`: List all projects and their IDs.
 - `n8ncli folders`: List all folders under a project.
 
 ### Syncing
-- `n8ncli pull [--force] [--skip-references]`: Pull workflows from n8n instance.
-- `n8ncli push [--force] [--dry-run]`: Deploy local modifications.
+- `n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>]`: Pull workflows from n8n instance and sync folder metadata.
+- `n8ncli push [--force] [--dry-run] [--db-url <url>]`: Deploy local modifications and synchronize directory structures.
 - `n8ncli status`: List modified/untracked/deleted files.
 - `n8ncli diff <file>`: Show unified line diff of a local file against remote.
 
@@ -111,5 +116,5 @@ When using an AI coder (like Claude Code) inside a repo managed by `n8ncli`, the
 1. **Discover Patterns:** Read `n8n/references/index.yaml` to find reference workflows and load relevant `.workflow.ts` files to copy code structures.
 2. **Consult Reference:** Run `n8ncli sdk all` to read SDK syntax, rules, and rules for expressions.
 3. **Discover Node Types:** Run `n8ncli nodes types n8n-nodes-base.gmail` to view exact parameter interfaces for the nodes they wish to add.
-4. **Develop & Validate:** Edit the local `.workflow.ts` files and run `n8ncli validate` to check for syntax and schema issues locally (milliseconds instead of slow MCP validation roundtrips).
+4. **Develop & Validate:** Edit local workflow files (written as `.json` or `.workflow.ts` files) and run `n8ncli validate` to check for syntax and schema issues locally (milliseconds instead of slow MCP validation roundtrips).
 5. **Sync & Publish:** Run `n8ncli push` to deploy, then `n8ncli publish <file>` to activate.

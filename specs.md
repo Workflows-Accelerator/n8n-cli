@@ -6,37 +6,63 @@
 
 ## 1. Environment & Configuration
 
-`n8ncli` relies on two files to manage its state: a committed JSON configuration file for target environments, and a gitignored `.env` file for secrets.
+`n8ncli` manages configuration at both the local project level and the machine-wide global level, alongside environment variables for secrets.
 
 ### 1.1 Local Configuration
 **Path:** `n8n/config/n8n-cli.json` (Committed)
+Stores project-specific, non-sensitive IDs and environment selectors.
 ```json
 {
-  "instanceUrl": "https://n8n.parris.app",
-  "environmentName": "development",
+  "env": "PARRIS",
   "projectId": "5U5vIHIc1Ug5eVLK",
-  "projectName": "Personal",
+  "projectName": "Workflows Accelerator <n8n@workflows.ac>",
   "folderId": "Nz4UtQWrmrHMcZIE",
-  "mcpServerCommand": "npx n8n-mcp",
+  "folderName": "Case Management Platform",
   "references": {
     "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "References",
-    "folderId": "3JiyzwujIPklu0w8"
+    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
+    "folderId": "3JiyzwujIPklu0w8",
+    "folderName": "AI Examples"
   }
 }
 ```
 
-### 1.2 Secrets & Environment Variables
+### 1.2 Global Configuration
+**Path:** `~/.n8ncli-global.json` (Local to machine)
+Allows storing multiple environments at the instance level (e.g. for different client instances). When the local configuration specifies `"env": "PARRIS"`, parameters are resolved from the corresponding global environment.
+```json
+{
+  "dbUrl": "postgres://user:pass@host:port/db?sslmode=require",
+  "accessToken": "mcp-access-token",
+  "apiKey": "n8n-rest-api-key",
+  "instanceUrl": "https://n8n.parris.app",
+  "mcpCommand": "npx -y n8n-mcp",
+  "environments": {
+    "PARRIS": {
+      "instanceUrl": "https://n8n.parris.app",
+      "mcpCommand": "npx -y n8n-mcp",
+      "dbUrl": "postgres://user:pass@host:port/db?sslmode=require",
+      "accessToken": "mcp-access-token",
+      "apiKey": "n8n-rest-api-key"
+    }
+  }
+}
+```
+
+### 1.3 Secrets & Environment Variables
 **Path:** `.env` (Gitignored)
+Environment variables override settings from both global and local configurations.
 - `N8N_ACCESS_TOKEN`: Standard access token for starting the MCP connection.
 - `N8N_API_KEY`: REST API Key used for toggling permissions and REST actions.
-- `N8N_MCP_COMMAND`: (Optional) Override command to launch the MCP server.
+- `N8N_DB_URL`: PostgreSQL connection URL to the n8n database for direct folder synchronization.
+- `N8N_INSTANCE_URL`: URL of the target n8n instance.
+- `N8N_MCP_COMMAND`: Launch command override for the MCP server.
 
 ---
 
 ## 2. Sync State Database
 
-To track synchronization without polluting the TypeScript files, `n8ncli` maintains a local sync database.
+To track synchronization without polluting the TypeScript files, `n8ncli` maintains a local sync database. It tracks workflow hashes, IDs, and previously synchronized folders to facilitate precise changes and deletions.
 
 **Path:** `n8n/config/sync-state.json` (Gitignored)
 ```json
@@ -51,7 +77,12 @@ To track synchronization without polluting the TypeScript files, `n8ncli` mainta
       "remoteUpdatedAt": "2026-06-07T15:30:00.000Z",
       "folderId": "Nz4UtQWrmrHMcZIE"
     }
-  }
+  },
+  "folders": [
+    "Nz4UtQWrmrHMcZIE",
+    "tjTlRGYqzDsf3raC",
+    "Kq31KMvGK8dTzIqt"
+  ]
 }
 ```
 
@@ -68,7 +99,8 @@ my-project/
 └── n8n/
     ├── config/
     │   ├── n8n-cli.json              # Active environment configs (committed)
-    │   └── sync-state.json           # Sync state tracking database (gitignored)
+    │   ├── sync-state.json           # Sync state tracking database (gitignored)
+    │   └── workflow-folders.json     # Cached workflow-to-folder relationships
     ├── references/                   # Reference Workflows (gitignored, read-only cache)
     │   ├── index.yaml                # Searchable YAML index (name, path, description)
     │   └── [Folder]/
@@ -82,16 +114,16 @@ my-project/
 
 ## 4. Commands Reference
 
-All commands support a global `--verbose` flag for detailed stderr logging.
+All commands support a global `--verbose` flag for detailed stderr logging. Additionally, commands automatically run local workflow conversion from `.json` files to `.workflow.ts` when targets or directories are parsed.
 
 ### `n8ncli init`
 ```bash
-n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>]
+n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>] [--db-url <url>]
 ```
 - Sets up folders under `n8n/`.
 - Populates/appends `.env` and `.gitignore`.
 - Establishes `n8n/config/n8n-cli.json`.
-- Discovers and validates project/folder names through remote MCP calls.
+- Saves configurations globally to `~/.n8ncli-global.json` under the specified `--env` namespace.
 
 ### `n8ncli projects`
 ```bash
@@ -107,22 +139,27 @@ n8ncli folders --project-id <id> [--query <q>] [--limit <n>]
 
 ### `n8ncli pull`
 ```bash
-n8ncli pull [--force] [--skip-references]
+n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>]
 ```
 - Pulls all workflows matching the configured `projectId`/`folderId`.
 - Converts JSON definition to TypeScript using `@n8n/workflow-sdk`'s `generateWorkflowCode`.
 - Writes `.workflow.ts` locally and saves metadata to `sync-state.json`.
+- **Empty Folder Retention Safety**: Retains empty directories on disk if they exist on the remote instance.
+- **Hard Sync (`--hard`)**: Deletes untracked and out-of-scope local workflows.
 - Automatically pulls references into `n8n/references/` and recreates `index.yaml`.
 
 ### `n8ncli push`
 ```bash
-n8ncli push [--force] [--dry-run]
+n8ncli push [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
 ```
 - Evaluates differences between local `.workflow.ts` files, sync state, and remote instance.
 - **Deletions:** Calls `archive_workflow` for workflows removed locally.
 - **Creations:** Parses local TS code to JSON, runs `create_workflow_from_code` on n8n.
 - **Updates:** Runs `update_workflow` for modified TS files.
-- Safe abort on syntax/validation errors unless `--force` is set.
+- **Folder Sync**: If a PostgreSQL `dbUrl` is configured:
+  - **Create**: Inserts missing subdirectories into the `folder` table.
+  - **Rename/Move**: Detects moved/renamed directories from workflow renames and updates the database record.
+  - **Prune**: Deletes folders from the database that were previously pulled/synced but are no longer present locally. Only applies to folders within the scope of the configured base project folder.
 
 ### `n8ncli status`
 ```bash
@@ -163,6 +200,8 @@ n8ncli execution <workflow-id-or-file> <execution-id> [--include-data] [--nodes 
 ### `n8ncli publish` / `unpublish`
 ```bash
 n8ncli publish <workflow-id-or-file>
+```
+```bash
 n8ncli unpublish <workflow-id-or-file>
 ```
 - Activates/deactivates workflows remote execution schedules.
@@ -191,3 +230,9 @@ When running `pull` and a local file differs from the remote version:
 When running `push` and a local modification needs to go remote:
 - If `sync-state.json`'s `remoteUpdatedAt` matches the current remote updatedAt $\rightarrow$ Remote is unmodified; safe to update.
 - If `sync-state.json`'s `remoteUpdatedAt` does not match current remote updatedAt $\rightarrow$ Workflow was changed on the server by someone else. `push` aborts and outputs a conflict alert, bypassed only with `--force`.
+
+### 5.3 Local JSON Conversion
+Whenever a local workflow file ends with `.json`, execution of commands automatically triggers a conversion process:
+- Generates corresponding TypeScript SDK code.
+- Deletes the original `.json` file to prevent duplicate tracking or conflict.
+- Continues execution using the newly converted `.workflow.ts` file path.
