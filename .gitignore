@@ -9,7 +9,3 @@ dist/
 # n8ncli ignored files
 n8n/config/sync-state.json
 n8n/references/
-
-# n8ncli ignored files
-n8n_dev/config/sync-state.json
-n8n_dev/references/

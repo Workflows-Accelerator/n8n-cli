@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot, loadConfig } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertTarget } from '../config.js';
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
@@ -22,10 +22,12 @@ export function validateCommand(program: Command) {
         const localDir = config.localDir || 'n8n';
 
         const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+        convertLocalJsonWorkflows(workflowsDir);
+        
         let filesToValidate: string[] = [];
 
         if (files && files.length > 0) {
-          filesToValidate = files.map((f: string) => path.resolve(f));
+          filesToValidate = files.map((f: string) => path.resolve(resolveAndConvertTarget(f, workflowsDir)));
         } else {
           if (!fs.existsSync(workflowsDir)) {
             throw new Error(`Workflows directory not found at ${workflowsDir}`);

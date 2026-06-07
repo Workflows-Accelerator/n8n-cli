@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo } from '../config.js';
+import { getConnectionInfo, resolveAndConvertTarget } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import { loadSyncState } from '../sync-state.js';
 import * as output from '../output.js';
@@ -21,8 +21,9 @@ export function unpublishCommand(program: Command) {
 
         // Try to resolve from sync state if a file path is provided
         if (repoRoot) {
-          const fullPath = path.resolve(target);
           const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+          const resolvedTarget = resolveAndConvertTarget(target, workflowsDir);
+          const fullPath = path.resolve(resolvedTarget);
           if (fs.existsSync(fullPath)) {
             const relativePath = path.relative(workflowsDir, fullPath).replace(/\\/g, '/');
             const syncState = loadSyncState(repoRoot, localDir);

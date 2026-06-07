@@ -3,6 +3,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import os from 'os';
 import pg from 'pg';
+import { generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from './output.js';
 
 export interface N8nCliConfig {
@@ -186,9 +187,10 @@ export interface ConnectionInfo {
   apiKey: string;
   instanceUrl: string;
   localDir: string;
+  dbUrl: string;
 }
 
-export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string } = {}): ConnectionInfo {
+export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string; dbUrl?: string } = {}): ConnectionInfo {
   const repoRoot = findRepoRoot();
   if (repoRoot) {
     loadEnv(repoRoot);
@@ -230,6 +232,7 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
   let accessToken = options.accessToken || process.env.N8N_ACCESS_TOKEN || envConfig.accessToken || globalConfig.accessToken;
   let apiKey = options.apiKey || process.env.N8N_API_KEY || envConfig.apiKey || globalConfig.apiKey || '';
   let instanceUrl = options.url || process.env.N8N_INSTANCE_URL || envConfig.instanceUrl || globalConfig.instanceUrl || '';
+  let dbUrl = options.dbUrl || process.env.N8N_DB_URL || envConfig.dbUrl || globalConfig.dbUrl || '';
 
   if (!accessToken) {
     throw new Error(
@@ -253,6 +256,7 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     apiKey,
     instanceUrl,
     localDir,
+    dbUrl,
   };
 }
 
@@ -482,6 +486,72 @@ export async function fetchWorkflowsWithDb(dbUrl: string): Promise<any[] | null>
       // ignore
     }
   }
+}
+
+export function convertLocalJsonWorkflows(workflowsDir: string) {
+  if (!fs.existsSync(workflowsDir)) return;
+  
+  const getJsonFiles = (dir: string): string[] => {
+    let results: string[] = [];
+    try {
+      const list = fs.readdirSync(dir, { withFileTypes: true });
+      for (const file of list) {
+        const filePath = path.join(dir, file.name);
+        if (file.isDirectory()) {
+          results = results.concat(getJsonFiles(filePath));
+        } else if (file.isFile() && file.name.endsWith('.json') && file.name !== 'sync-state.json' && file.name !== 'workflow-folders.json') {
+          results.push(filePath);
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+    return results;
+  };
+
+  const jsonFiles = getJsonFiles(workflowsDir);
+  for (const jsonPath of jsonFiles) {
+    try {
+      const content = fs.readFileSync(jsonPath, 'utf-8');
+      const parsed = JSON.parse(content);
+      
+      // Basic heuristic to check if this is indeed a workflow JSON
+      if (parsed && (Array.isArray(parsed.nodes) || parsed.connections)) {
+        output.log(`Converting JSON workflow '${parsed.name || path.basename(jsonPath)}' to TypeScript SDK...`);
+        const tsCode = generateWorkflowCode(parsed);
+        const tsPath = jsonPath.replace(/\.json$/, '.workflow.ts');
+        fs.writeFileSync(tsPath, tsCode, 'utf-8');
+        fs.unlinkSync(jsonPath);
+        output.log(`  [CONVERTED] Created ${path.relative(workflowsDir, tsPath)} and deleted original JSON.`);
+      }
+    } catch (e) {
+      // Not a valid workflow JSON, skip it silently
+    }
+  }
+}
+
+export function resolveAndConvertTarget(target: string, workflowsDir: string): string {
+  let targetPath = target;
+  if (targetPath.endsWith('.json')) {
+    const fullPath = path.resolve(targetPath);
+    if (fs.existsSync(fullPath)) {
+      try {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (parsed && (Array.isArray(parsed.nodes) || parsed.connections)) {
+          const tsCode = generateWorkflowCode(parsed);
+          const tsPath = fullPath.replace(/\.json$/, '.workflow.ts');
+          fs.writeFileSync(tsPath, tsCode, 'utf-8');
+          fs.unlinkSync(fullPath);
+          output.log(`Converted targeted JSON workflow to TypeScript SDK: ${path.basename(tsPath)}`);
+          targetPath = tsPath;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+  }
+  return targetPath;
 }
 
 

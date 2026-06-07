@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { getConnectionInfo, buildFolderPaths } from '../config.js';
+import pg from 'pg';
+import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
@@ -41,6 +42,15 @@ async function findWorkflowIdByName(mcp: McpClient, projectId: string, name: str
   }
 }
 
+function generateFolderId(): string {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < 16; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
 export function pushCommand(program: Command) {
   program
     .command('push')
@@ -49,9 +59,14 @@ export function pushCommand(program: Command) {
     .option('--dry-run', 'simulate changes without executing them', false)
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
+    .option('--api-key <key>', 'override n8n REST API key')
+    .option('--url <url>', 'override n8n instance URL')
+    .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
+    .option('--env <name>', 'override environment name on run')
     .action(async (options) => {
+      let pgClient: any = null;
       try {
-        const { mcpCommand, accessToken, config, repoRoot, localDir } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, config, repoRoot, localDir, dbUrl } = getConnectionInfo(options);
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
@@ -63,6 +78,9 @@ export function pushCommand(program: Command) {
 
         const syncState = loadSyncState(repoRoot, localDir);
         const localWorkflowsDir = path.join(repoRoot, localDir, 'workflows');
+
+        // Convert local json workflows to TS workflows before doing anything
+        convertLocalJsonWorkflows(localWorkflowsDir);
 
         // 1. Scan local .workflow.ts files
         const localFiles = glob.sync('**/*.workflow.ts', { cwd: localWorkflowsDir });
@@ -160,35 +178,225 @@ export function pushCommand(program: Command) {
         newPaths.length = 0;
         newPaths.push(...unmatchedNewPaths);
 
-        if (newPaths.length === 0 && modifiedPaths.length === 0 && deletedPaths.length === 0 && renamedPaths.length === 0) {
+        // Scan local folders under localWorkflowsDir
+        const localFolders: string[] = [];
+        const getLocalSubdirectories = (dir: string, baseDir: string) => {
+          try {
+            const list = fs.readdirSync(dir, { withFileTypes: true });
+            for (const item of list) {
+              if (item.isDirectory()) {
+                const fullPath = path.join(dir, item.name);
+                const relPath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+                localFolders.push(relPath);
+                getLocalSubdirectories(fullPath, baseDir);
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+        };
+        if (fs.existsSync(localWorkflowsDir)) {
+          getLocalSubdirectories(localWorkflowsDir, localWorkflowsDir);
+        }
+        localFolders.sort((a, b) => a.split('/').length - b.split('/').length);
+
+        // Database connection and fetching remote folders
+        let remoteFolders: any[] = [];
+        const folderPathToId: Record<string, string> = {};
+        let folderPaths: Record<string, string> = {};
+
+        if (dbUrl) {
+          try {
+            const pgModule = pg as any;
+            const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+            pgClient = new ClientClass({
+              connectionString: dbUrl,
+              ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+            });
+            await pgClient.connect();
+            
+            const res = await pgClient.query(
+              'SELECT id, name, "parentFolderId" FROM folder WHERE "projectId" = $1;',
+              [projectId]
+            );
+            remoteFolders = res.rows;
+            folderPaths = buildFolderPaths(remoteFolders, folderId);
+            for (const [fId, fPath] of Object.entries(folderPaths)) {
+              folderPathToId[fPath.toLowerCase()] = fId;
+            }
+          } catch (err) {
+            output.warn(`Failed to connect to database for folder sync: ${err instanceof Error ? err.message : String(err)}. Skipping database folder sync.`);
+            pgClient = null;
+          }
+        }
+
+        // Detect folder renames/moves from workflow renames
+        const folderRenames = new Map<string, { newPath: string; newName: string; parentPath: string }>();
+        for (const rename of renamedPaths) {
+          const oldFolderPart = path.dirname(rename.oldPath).replace(/\\/g, '/');
+          const newFolderPart = path.dirname(rename.newPath).replace(/\\/g, '/');
+          
+          if (oldFolderPart !== newFolderPart) {
+            const oldWfEntry = syncState.workflows[rename.oldPath];
+            if (oldWfEntry && oldWfEntry.folderId && oldWfEntry.folderId !== folderId) {
+              const oldFolderId = oldWfEntry.folderId;
+              const newPathLower = newFolderPart.toLowerCase();
+              if (newFolderPart && newFolderPart !== '.' && !folderPathToId[newPathLower] && !folderRenames.has(oldFolderId)) {
+                const newName = path.basename(newFolderPart);
+                const parentPath = path.dirname(newFolderPart).replace(/\\/g, '/');
+                folderRenames.set(oldFolderId, { newPath: newFolderPart, newName, parentPath });
+              }
+            }
+          }
+        }
+
+        // Calculate new folders to create
+        const newFoldersToCreate: Array<{ name: string; path: string; parentId: string | null }> = [];
+        const tempFolderPathToId = { ...folderPathToId };
+        
+        for (const [fId, update] of folderRenames.entries()) {
+          tempFolderPathToId[update.newPath.toLowerCase()] = fId;
+        }
+
+        for (const localFolder of localFolders) {
+          if (!tempFolderPathToId[localFolder.toLowerCase()]) {
+            const folderName = path.basename(localFolder);
+            const parentPath = path.dirname(localFolder).replace(/\\/g, '/');
+            let parentFolderDbId: string | null = folderId || null;
+            if (parentPath && parentPath !== '.') {
+              parentFolderDbId = tempFolderPathToId[parentPath.toLowerCase()] || folderId || null;
+            }
+            newFoldersToCreate.push({ name: folderName, path: localFolder, parentId: parentFolderDbId });
+            tempFolderPathToId[localFolder.toLowerCase()] = 'simulated_new_id';
+          }
+        }
+
+        // Calculate folder prunes
+        const activeFolderIds = new Set<string>();
+        for (const localFolder of localFolders) {
+          const id = tempFolderPathToId[localFolder.toLowerCase()];
+          if (id && id !== 'simulated_new_id') activeFolderIds.add(id);
+        }
+
+        const pruneCandidates = remoteFolders.filter((f: any) => 
+          f.id !== folderId && 
+          folderPaths[f.id] !== undefined && 
+          (syncState.folders || []).includes(f.id) && 
+          !activeFolderIds.has(f.id)
+        );
+
+        if (pruneCandidates.length > 0) {
+          const folderDepths = new Map<string, number>();
+          const getFolderDepth = (id: string): number => {
+            if (folderDepths.has(id)) return folderDepths.get(id)!;
+            const f = remoteFolders.find((r: any) => r.id === id);
+            if (!f || !f.parentFolderId || f.parentFolderId === folderId) {
+              folderDepths.set(id, 0);
+              return 0;
+            }
+            const d = getFolderDepth(f.parentFolderId) + 1;
+            folderDepths.set(id, d);
+            return d;
+          };
+          pruneCandidates.sort((a: any, b: any) => getFolderDepth(b.id) - getFolderDepth(a.id));
+        }
+
+        // Check for any changes (workflows OR folders)
+        const hasWorkflowChanges = newPaths.length > 0 || modifiedPaths.length > 0 || deletedPaths.length > 0 || renamedPaths.length > 0;
+        const hasFolderChanges = folderRenames.size > 0 || newFoldersToCreate.length > 0 || pruneCandidates.length > 0;
+
+        if (!hasWorkflowChanges && !hasFolderChanges) {
           output.log('Everything is up-to-date.');
           return;
         }
 
+        // Print Plan
         output.log('Plan:');
         if (newPaths.length > 0) {
-          output.log('  New:');
+          output.log('  New Workflows:');
           newPaths.forEach(p => output.log(`    + ${p}`));
         }
         if (renamedPaths.length > 0) {
-          output.log('  Renamed:');
+          output.log('  Renamed Workflows:');
           renamedPaths.forEach(r => output.log(`    -> ${r.oldPath} to ${r.newPath}`));
         }
         if (modifiedPaths.length > 0) {
-          output.log('  Modified:');
+          output.log('  Modified Workflows:');
           modifiedPaths.forEach(p => output.log(`    ~ ${p}`));
         }
         if (deletedPaths.length > 0) {
-          output.log('  Deleted (Archive):');
+          output.log('  Deleted (Archive) Workflows:');
           deletedPaths.forEach(p => output.log(`    - ${p}`));
         }
+        
+        if (hasFolderChanges) {
+          output.log('  Folder Operations:');
+          for (const [fId, update] of folderRenames.entries()) {
+            let newParentId = folderId || null;
+            if (update.parentPath && update.parentPath !== '.') {
+              newParentId = tempFolderPathToId[update.parentPath.toLowerCase()] || folderId || null;
+            }
+            output.log(`    ~ Rename folder ID ${fId} to '${update.newName}' (parent: ${newParentId || 'root'})`);
+          }
+          for (const newFolder of newFoldersToCreate) {
+            output.log(`    + Create folder: '${newFolder.name}' (path: ${newFolder.path}, parent: ${newFolder.parentId || 'root'})`);
+          }
+          for (const prune of pruneCandidates) {
+            output.log(`    - Delete folder: '${prune.name}' (ID: ${prune.id})`);
+          }
+        }
 
+        // If dry-run, exit successfully
         if (options.dryRun) {
           output.log('\n[Dry Run] Push simulated successfully.');
           return;
         }
 
-        // 3. Connect to MCP and execute actions
+        // Execute Folder Renames and Creations in DB (Actual Run)
+        if (pgClient) {
+          // Folder renames
+          for (const [fId, update] of folderRenames.entries()) {
+            let newParentId: string | null = folderId || null;
+            if (update.parentPath && update.parentPath !== '.') {
+              newParentId = folderPathToId[update.parentPath.toLowerCase()] || folderId || null;
+            }
+            output.log(`Renaming folder in database: ID ${fId} to '${update.newName}' (parent: ${newParentId || 'root'})...`);
+            try {
+              await pgClient.query(
+                'UPDATE folder SET name = $1, "parentFolderId" = $2, "updatedAt" = NOW() WHERE id = $3;',
+                [update.newName, newParentId, fId]
+              );
+            } catch (err) {
+              output.error(`Failed to rename folder ${fId}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+            folderPathToId[update.newPath.toLowerCase()] = fId;
+          }
+
+          // Folder creations
+          for (const newFolder of newFoldersToCreate) {
+            const newFId = generateFolderId();
+            let parentDbId: string | null = folderId || null;
+            if (newFolder.path) {
+              const parentPath = path.dirname(newFolder.path).replace(/\\/g, '/');
+              if (parentPath && parentPath !== '.') {
+                parentDbId = folderPathToId[parentPath.toLowerCase()] || folderId || null;
+              }
+            }
+            output.log(`Creating folder in database: '${newFolder.name}' (parent: ${parentDbId || 'root'}) with ID ${newFId}...`);
+            try {
+              await pgClient.query(
+                'INSERT INTO folder (id, name, "parentFolderId", "projectId", "createdAt", "updatedAt") VALUES ($1, $2, $3, $4, NOW(), NOW());',
+                [newFId, newFolder.name, parentDbId, projectId]
+              );
+            } catch (err) {
+              output.error(`Failed to create folder '${newFolder.path}': ${err instanceof Error ? err.message : String(err)}`);
+            }
+            folderPathToId[newFolder.path.toLowerCase()] = newFId;
+            activeFolderIds.add(newFId);
+          }
+        }
+
+        // 10. Connect to MCP and execute actions
         await withMcp(mcpCommand, accessToken, async (mcp) => {
           // A. Handle Deleted Workflows
           for (const relPath of deletedPaths) {
@@ -204,15 +412,13 @@ export function pushCommand(program: Command) {
             }
           }
 
-          // Fetch folder mapping to resolve folder ID
-          let folderPaths: Record<string, string> = {};
-          const folderPathToId: Record<string, string> = {};
-          if (projectId) {
+          // Fallback to MCP folders fetch if database did not build the path mapping
+          if (Object.keys(folderPathToId).length === 0 && projectId) {
             try {
               const folders = await mcp.callToolAndGetJson('search_folders', { projectId });
               const folderList = Array.isArray(folders) ? folders : (folders.folders || folders.data || []);
-              folderPaths = buildFolderPaths(folderList, folderId);
-              for (const [fId, fPath] of Object.entries(folderPaths)) {
+              const paths = buildFolderPaths(folderList, folderId);
+              for (const [fId, fPath] of Object.entries(paths)) {
                 folderPathToId[fPath.toLowerCase()] = fId;
               }
             } catch (err) {
@@ -220,10 +426,10 @@ export function pushCommand(program: Command) {
             }
           }
 
-          // B. Handle Renamed or Moved Workflows (file renamed/moved on disk first)
+          // B. Handle Renamed or Moved Workflows
           for (const rename of renamedPaths) {
             const folderPart = path.dirname(rename.newPath).replace(/\\/g, '/');
-            let newFolderId = folderId; // default
+            let newFolderId = folderId;
             if (folderPart && folderPart !== '.') {
               newFolderId = folderPathToId[folderPart.toLowerCase()] || folderId;
             }
@@ -251,13 +457,11 @@ export function pushCommand(program: Command) {
                   throw new Error('Could not retrieve new workflow ID from creation response during move.');
                 }
 
-                // Archive the old workflow ID on n8n
                 output.log(`Archiving old workflow ${rename.id}...`);
                 await mcp.callTool('archive_workflow', {
                   workflowId: rename.id,
                 });
 
-                // Rewrite the local .workflow.ts file with the new workflow ID!
                 const fullPath = path.join(localWorkflowsDir, rename.newPath);
                 const updatedCode = code.replace(
                   /(workflow\(\s*['"])[a-zA-Z0-9_-]+(['"])/,
@@ -309,9 +513,8 @@ export function pushCommand(program: Command) {
             const name = localNames[relPath];
             output.log(`Creating new workflow: ${name}...`);
 
-            // Resolve folder ID from path prefix
             const folderPart = path.dirname(relPath).replace(/\\/g, '/');
-            let targetFolderId = folderId; // default to configuration folder ID
+            let targetFolderId = folderId;
             if (folderPart && folderPart !== '.') {
               const resolvedId = folderPathToId[folderPart.toLowerCase()];
               if (resolvedId) {
@@ -331,7 +534,6 @@ export function pushCommand(program: Command) {
 
               let newId = extractIdFromResponse(response);
               if (!newId) {
-                // Try fallback search by name
                 newId = await findWorkflowIdByName(mcp, projectId, name);
               }
 
@@ -339,13 +541,12 @@ export function pushCommand(program: Command) {
                 throw new Error('Could not retrieve new workflow ID from creation response.');
               }
 
-              // Update sync state
               syncState.workflows[relPath] = {
                 id: newId,
                 name,
                 localPath: relPath,
                 contentHash: localHashes[relPath],
-                remoteUpdatedAt: new Date().toISOString(), // Will be updated on next pull
+                remoteUpdatedAt: new Date().toISOString(),
                 folderId: targetFolderId,
               };
               output.log(`  [CREATED] ${relPath} (ID: ${newId})`);
@@ -354,14 +555,13 @@ export function pushCommand(program: Command) {
             }
           }
 
-          // D. Handle Modified Workflows (includes in-code renames)
+          // D. Handle Modified Workflows
           for (const relPath of modifiedPaths) {
             const entry = syncState.workflows[relPath];
             const name = localNames[relPath];
             output.log(`Updating workflow: ${name} (${entry.id})...`);
 
             try {
-              // Fetch remote details to check for conflicts
               let conflict = false;
               if (!options.force) {
                 try {
@@ -375,7 +575,7 @@ export function pushCommand(program: Command) {
                     conflict = true;
                   }
                 } catch (e) {
-                  // ignore get details failure
+                  // ignore
                 }
               }
 
@@ -409,13 +609,12 @@ export function pushCommand(program: Command) {
                 }
               }
 
-              // Update sync entry
               syncState.workflows[finalRelPath] = {
                 ...entry,
                 name,
                 localPath: finalRelPath,
                 contentHash: localHashes[relPath],
-                remoteUpdatedAt: new Date().toISOString(), // Will be updated on next pull
+                remoteUpdatedAt: new Date().toISOString(),
               };
               output.log(`  [UPDATED] ${finalRelPath}`);
             } catch (err) {
@@ -423,8 +622,22 @@ export function pushCommand(program: Command) {
             }
           }
 
+          // Execute folder pruning in database (Actual Run)
+          if (pgClient && pruneCandidates.length > 0) {
+            for (const candidate of pruneCandidates) {
+              output.log(`Pruning unused folder from database: '${candidate.name}' (ID: ${candidate.id})...`);
+              try {
+                await pgClient.query('DELETE FROM folder WHERE id = $1;', [candidate.id]);
+                activeFolderIds.delete(candidate.id);
+              } catch (err) {
+                output.error(`Failed to prune folder '${candidate.name}' (ID: ${candidate.id}): ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          }
+
           // Save final sync state
           syncState.lastSync = new Date().toISOString();
+          syncState.folders = Array.from(activeFolderIds);
           saveSyncState(repoRoot, syncState, localDir);
         });
 
@@ -432,6 +645,14 @@ export function pushCommand(program: Command) {
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
+      } finally {
+        if (pgClient) {
+          try {
+            await pgClient.end();
+          } catch (e) {
+            // ignore
+          }
+        }
       }
     });
 }

@@ -14,6 +14,7 @@ export interface SyncWorkflowEntry {
 export interface SyncState {
   lastSync: string; // ISO timestamp
   workflows: Record<string, SyncWorkflowEntry>; // local relative path -> entry
+  folders?: string[]; // folder IDs present locally on last sync
 }
 
 export function loadSyncState(repoRoot: string, localDir: string = 'n8n'): SyncState {

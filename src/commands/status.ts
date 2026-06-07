@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows } from '../config.js';
 import { loadSyncState, calculateHash } from '../sync-state.js';
 import * as output from '../output.js';
 
@@ -22,6 +22,8 @@ export function statusCommand(program: Command) {
 
         const syncState = loadSyncState(repoRoot, localDir);
         const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+
+        convertLocalJsonWorkflows(workflowsDir);
 
         if (!fs.existsSync(workflowsDir)) {
           output.log('No workflows directory found. Run `n8ncli pull` first.');

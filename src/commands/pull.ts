@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { pullReferences } from '../references.js';
@@ -155,6 +155,7 @@ export function pullCommand(program: Command) {
       let repoRoot: string | null = null;
       let mcpCommand = '';
       let accessToken = '';
+      let dbUrl = '';
 
       try {
         const connectionInfo = getConnectionInfo(options);
@@ -163,12 +164,15 @@ export function pullCommand(program: Command) {
         accessToken = connectionInfo.accessToken;
         apiKey = connectionInfo.apiKey;
         instanceUrl = connectionInfo.instanceUrl;
+        dbUrl = connectionInfo.dbUrl;
         const config = connectionInfo.config;
         const localDir = connectionInfo.localDir;
 
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
+
+        convertLocalJsonWorkflows(path.join(repoRoot, localDir, 'workflows'));
 
         projectId = config.projectId;
         folderId = config.folderId;
@@ -177,10 +181,6 @@ export function pullCommand(program: Command) {
 
         // Load folder cache
         let folderCache = loadFolderCache(repoRoot, localDir);
-
-        // Resolve PostgreSQL Database URL
-        const globalConfig = loadGlobalConfig();
-        const dbUrl = options.dbUrl || process.env.N8N_DB_URL || globalConfig.dbUrl || '';
 
         if (dbUrl) {
           output.log('Database URL configured. Fetching workflow-to-folder relationships from PostgreSQL...');
@@ -433,7 +433,9 @@ export function pullCommand(program: Command) {
                   let dir = path.dirname(fullPath);
                   const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
                   while (dir !== localWorkflowsDir) {
-                    if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                    const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
+                    const isRemoteFolder = Object.values(folderPaths).includes(relDir);
+                    if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
                       fs.rmdirSync(dir);
                       dir = path.dirname(dir);
                     } else {
@@ -478,7 +480,9 @@ export function pullCommand(program: Command) {
                       // Clean up empty parent directories
                       let dir = path.dirname(fullPath);
                       while (dir !== localWorkflowsDir) {
-                        if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                        const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
+                        const isRemoteFolder = Object.values(folderPaths).includes(relDir);
+                        if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
                           fs.rmdirSync(dir);
                           dir = path.dirname(dir);
                         } else {
@@ -495,6 +499,7 @@ export function pullCommand(program: Command) {
 
             // Save sync state
             syncState.lastSync = new Date().toISOString();
+            syncState.folders = Object.keys(folderPaths);
             saveSyncState(repoRoot!, syncState, localDir);
 
             // Pull references

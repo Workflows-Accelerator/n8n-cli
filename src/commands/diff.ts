@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo } from '../config.js';
+import { getConnectionInfo, resolveAndConvertTarget } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import { loadSyncState } from '../sync-state.js';
 import { generateWorkflowCode } from '@n8n/workflow-sdk';
@@ -61,12 +61,13 @@ export function diffCommand(program: Command) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
 
-        const fullPath = path.resolve(file);
+        const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+        const resolvedFile = resolveAndConvertTarget(file, workflowsDir);
+        const fullPath = path.resolve(resolvedFile);
         if (!fs.existsSync(fullPath)) {
           throw new Error(`Local file not found at ${fullPath}`);
         }
 
-        const workflowsDir = path.join(repoRoot, localDir, 'workflows');
         const relativePath = path.relative(workflowsDir, fullPath).replace(/\\/g, '/');
 
         const syncState = loadSyncState(repoRoot, localDir);
