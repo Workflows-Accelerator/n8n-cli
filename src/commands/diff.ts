@@ -7,17 +7,19 @@ import { loadSyncState } from '../sync-state.js';
 import { generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
-function computeLcs(orig: string[], mod: string[]): number[][] {
+function computeLcs(orig: string[], mod: string[]): Int32Array {
   const m = orig.length;
   const n = mod.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  const dp = new Int32Array((m + 1) * (n + 1));
 
   for (let i = 1; i <= m; i++) {
+    const rowOffset = i * (n + 1);
+    const prevRowOffset = (i - 1) * (n + 1);
     for (let j = 1; j <= n; j++) {
       if (orig[i - 1] === mod[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
+        dp[rowOffset + j] = dp[prevRowOffset + j - 1] + 1;
       } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        dp[rowOffset + j] = Math.max(dp[prevRowOffset + j], dp[rowOffset + j - 1]);
       }
     }
   }
@@ -28,22 +30,26 @@ function printDiff(orig: string[], mod: string[]) {
   const dp = computeLcs(orig, mod);
   let i = orig.length;
   let j = mod.length;
+  const n = mod.length;
   const diffLines: string[] = [];
 
   while (i > 0 || j > 0) {
+    const rowOffset = i * (n + 1);
+    const prevRowOffset = (i - 1) * (n + 1);
     if (i > 0 && j > 0 && orig[i - 1] === mod[j - 1]) {
-      diffLines.unshift(`  ${orig[i - 1]}`);
+      diffLines.push(`  ${orig[i - 1]}`);
       i--;
       j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      diffLines.unshift(`\x1b[32m+ ${mod[j - 1]}\x1b[0m`);
+    } else if (j > 0 && (i === 0 || dp[rowOffset + j - 1] >= dp[prevRowOffset + j])) {
+      diffLines.push(`\x1b[32m+ ${mod[j - 1]}\x1b[0m`);
       j--;
-    } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
-      diffLines.unshift(`\x1b[31m- ${orig[i - 1]}\x1b[0m`);
+    } else if (i > 0 && (j === 0 || dp[rowOffset + j - 1] < dp[prevRowOffset + j])) {
+      diffLines.push(`\x1b[31m- ${orig[i - 1]}\x1b[0m`);
       i--;
     }
   }
 
+  diffLines.reverse();
   diffLines.forEach(line => console.log(line));
 }
 

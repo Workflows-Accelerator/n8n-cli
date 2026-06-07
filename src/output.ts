@@ -1,15 +1,26 @@
 let isVerbose = false;
+let isJsonMode = false;
 
 export function setVerbose(verbose: boolean) {
   isVerbose = verbose;
 }
 
+export function setJsonMode(json: boolean) {
+  isJsonMode = json;
+}
+
+export function getJsonMode(): boolean {
+  return isJsonMode;
+}
+
 export function log(msg: string) {
-  console.log(msg);
+  if (!isJsonMode) {
+    console.log(msg);
+  }
 }
 
 export function debug(msg: string) {
-  if (isVerbose) {
+  if (isVerbose && !isJsonMode) {
     console.warn(`debug: ${msg}`);
   }
 }
@@ -26,7 +37,9 @@ export function error(msg: string | Error) {
 }
 
 export function warn(msg: string) {
-  console.warn(`warn: ${msg}`);
+  if (!isJsonMode) {
+    console.warn(`warn: ${msg}`);
+  }
 }
 
 export function list(items: string[], indent = 2) {

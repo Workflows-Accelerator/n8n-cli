@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { setVerbose } from './output.js';
+import { setVerbose, setJsonMode } from './output.js';
 import { initCommand } from './commands/init.js';
 import { projectsCommand } from './commands/projects.js';
 import { foldersCommand } from './commands/folders.js';
@@ -23,11 +23,16 @@ program
   .description('AI-First n8n Workflow CLI')
   .version('1.0.0')
   .option('--verbose', 'enable verbose logging', false)
+  .option('--json', 'output structured JSON for program integration', false)
   .option('--env <name>', 'specify environment name')
+  .option('--config <path>', 'explicit path to n8n-cli.json configuration file')
   .hook('preAction', (thisCommand, actionCommand) => {
     // Set verbose mode if --verbose flag was passed to either main program or subcommand
     const verbose = !!(thisCommand.opts().verbose || actionCommand.opts().verbose);
     setVerbose(verbose);
+    // Set JSON mode if --json flag was passed
+    const json = !!(thisCommand.opts().json || actionCommand.opts().json);
+    setJsonMode(json);
   });
 
 // Register all commands

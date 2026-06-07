@@ -63,7 +63,7 @@ export function getConfigPath(repoRoot: string): string {
     try {
       const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
           const p = path.join(repoRoot, entry.name, 'config', 'n8n-cli.json');
           if (fs.existsSync(p)) {
             try {
@@ -92,7 +92,7 @@ export function getConfigPath(repoRoot: string): string {
   try {
     const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
         const possibleConfig = path.join(repoRoot, entry.name, 'config', 'n8n-cli.json');
         if (fs.existsSync(possibleConfig)) {
           return possibleConfig;
@@ -121,7 +121,7 @@ export function findRepoRoot(startDir: string = process.cwd()): string | null {
     try {
       const entries = fs.readdirSync(currentDir, { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
+        if (entry.isDirectory() && entry.name !== 'node_modules' && entry.name !== '.git' && entry.name !== 'dist' && entry.name !== 'build') {
           const possibleConfig = path.join(currentDir, entry.name, 'config', 'n8n-cli.json');
           if (fs.existsSync(possibleConfig)) {
             return currentDir;
@@ -191,8 +191,23 @@ export interface ConnectionInfo {
   dbUrl: string;
 }
 
-export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string; dbUrl?: string } = {}): ConnectionInfo {
-  const repoRoot = findRepoRoot();
+export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string; dbUrl?: string; config?: string } = {}): ConnectionInfo {
+  let repoRoot = findRepoRoot();
+  let configPath = '';
+
+  if (options.config) {
+    configPath = path.resolve(options.config);
+    if (fs.existsSync(configPath)) {
+      if (configPath.endsWith(path.join('config', 'n8n-cli.json'))) {
+        repoRoot = path.dirname(path.dirname(configPath));
+      } else {
+        repoRoot = path.dirname(configPath);
+      }
+    } else {
+      throw new Error(`Custom configuration file not found at ${configPath}`);
+    }
+  }
+
   if (repoRoot) {
     loadEnv(repoRoot);
   } else {
@@ -203,7 +218,23 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
   }
 
   let config: N8nCliConfig | null = null;
-  if (repoRoot) {
+  if (options.config) {
+    try {
+      const content = fs.readFileSync(configPath, 'utf-8');
+      config = JSON.parse(content) as N8nCliConfig;
+      if (!config.localDir) {
+        const relative = path.relative(repoRoot || process.cwd(), configPath);
+        const segments = relative.split(path.sep);
+        if (segments.length > 1 && segments[0] !== 'n8n-cli.json') {
+          config.localDir = segments[0];
+        } else {
+          config.localDir = 'n8n';
+        }
+      }
+    } catch (err) {
+      throw new Error(`Failed to read/parse custom configuration at ${configPath}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } else if (repoRoot) {
     try {
       config = loadConfig(repoRoot);
     } catch (err) {
@@ -533,8 +564,17 @@ export function convertLocalJsonWorkflows(workflowsDir: string) {
 
 export function resolveAndConvertTarget(target: string, workflowsDir: string): string {
   let targetPath = target;
+  let fullPath = path.resolve(targetPath);
+  
+  if (!fs.existsSync(fullPath)) {
+    const altPath = path.join(workflowsDir, targetPath);
+    if (fs.existsSync(altPath)) {
+      fullPath = altPath;
+      targetPath = altPath;
+    }
+  }
+
   if (targetPath.endsWith('.json')) {
-    const fullPath = path.resolve(targetPath);
     if (fs.existsSync(fullPath)) {
       try {
         const content = fs.readFileSync(fullPath, 'utf-8');

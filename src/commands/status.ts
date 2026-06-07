@@ -64,6 +64,17 @@ export function statusCommand(program: Command) {
           }
         }
 
+        if (output.getJsonMode()) {
+          console.log(JSON.stringify({
+            status: (newFiles.length === 0 && modifiedFiles.length === 0 && deletedFiles.length === 0) ? 'up-to-date' : 'diverged',
+            untracked: newFiles,
+            modified: modifiedFiles,
+            deleted: deletedFiles,
+            unchangedCount: unchangedFiles.length
+          }, null, 2));
+          return;
+        }
+
         // Output summary
         if (newFiles.length === 0 && modifiedFiles.length === 0 && deletedFiles.length === 0) {
           output.log('Your branch is up to date with the sync state. No changes to push.');

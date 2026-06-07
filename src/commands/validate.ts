@@ -42,12 +42,17 @@ export function validateCommand(program: Command) {
         }
 
         let overallSuccess = true;
+        const jsonResults: any[] = [];
 
         for (const file of filesToValidate) {
           const relativePath = path.relative(repoRoot, file).replace(/\\/g, '/');
           
           if (!fs.existsSync(file)) {
-            output.error(`File does not exist: ${relativePath}`);
+            if (output.getJsonMode()) {
+              jsonResults.push({ file: relativePath, exists: false, success: false, errors: ['File does not exist'], warnings: [] });
+            } else {
+              output.error(`File does not exist: ${relativePath}`);
+            }
             overallSuccess = false;
             continue;
           }
@@ -60,29 +65,63 @@ export function validateCommand(program: Command) {
             const hasErrors = validation.errors.length > 0;
             const hasWarnings = validation.warnings.length > 0;
 
+            if (output.getJsonMode()) {
+              jsonResults.push({
+                file: relativePath,
+                exists: true,
+                success: !hasErrors,
+                errors: validation.errors.map((e: any) => e.message),
+                warnings: validation.warnings.map((w: any) => w.message)
+              });
+            }
+
             if (hasErrors) {
-              output.error(`[INVALID] ${relativePath}`);
-              for (const err of validation.errors) {
-                output.error(`  - ${err.message}`);
+              if (!output.getJsonMode()) {
+                output.error(`[INVALID] ${relativePath}`);
+                for (const err of validation.errors) {
+                  output.error(`  - ${err.message}`);
+                }
               }
               overallSuccess = false;
             } else if (hasWarnings) {
-              output.log(`[WARNING] ${relativePath}`);
-              for (const warn of validation.warnings) {
-                output.warn(`  - ${warn.message}`);
+              if (!output.getJsonMode()) {
+                output.log(`[WARNING] ${relativePath}`);
+                for (const warn of validation.warnings) {
+                  output.warn(`  - ${warn.message}`);
+                }
               }
             } else {
-              output.log(`[VALID]   ${relativePath}`);
+              if (!output.getJsonMode()) {
+                output.log(`[VALID]   ${relativePath}`);
+              }
             }
           } catch (err) {
-            output.error(`[ERROR]   ${relativePath}: Failed to parse file.`);
-            output.error(`  - ${err instanceof Error ? err.message : String(err)}`);
+            const errMsg = err instanceof Error ? err.message : String(err);
+            if (output.getJsonMode()) {
+              jsonResults.push({
+                file: relativePath,
+                exists: true,
+                success: false,
+                errors: [errMsg],
+                warnings: []
+              });
+            } else {
+              output.error(`[ERROR]   ${relativePath}: Failed to parse file.`);
+              output.error(`  - ${errMsg}`);
+            }
             overallSuccess = false;
           }
         }
 
+        if (output.getJsonMode()) {
+          console.log(JSON.stringify({
+            success: overallSuccess,
+            results: jsonResults
+          }, null, 2));
+        }
+
         if (!overallSuccess) {
-          process.exit(1);
+          process.exit(2);
         }
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));

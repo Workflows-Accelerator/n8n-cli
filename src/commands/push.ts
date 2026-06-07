@@ -65,8 +65,9 @@ export function pushCommand(program: Command) {
     .option('--env <name>', 'override environment name on run')
     .action(async (options) => {
       let pgClient: any = null;
+      let hasConflicts = false;
       try {
-        const { mcpCommand, accessToken, config, repoRoot, localDir, dbUrl } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, config, repoRoot, localDir, dbUrl, apiKey, instanceUrl } = getConnectionInfo(options);
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
@@ -242,9 +243,24 @@ export function pushCommand(program: Command) {
               const oldFolderId = oldWfEntry.folderId;
               const newPathLower = newFolderPart.toLowerCase();
               if (newFolderPart && newFolderPart !== '.' && !folderPathToId[newPathLower] && !folderRenames.has(oldFolderId)) {
-                const newName = path.basename(newFolderPart);
-                const parentPath = path.dirname(newFolderPart).replace(/\\/g, '/');
-                folderRenames.set(oldFolderId, { newPath: newFolderPart, newName, parentPath });
+                // Check if all workflows currently active in oldFolderId are moved to the same destination
+                const oldFolderWorkflows = Object.values(syncState.workflows).filter(w => w.folderId === oldFolderId);
+                const activeOldFolderWorkflows = oldFolderWorkflows.filter(w => 
+                  localRelativePaths.some(p => {
+                    const entry = syncState.workflows[p];
+                    return entry && entry.id === w.id;
+                  })
+                );
+                const movedToNewFolder = renamedPaths.filter(r => 
+                  oldFolderWorkflows.some(w => w.id === r.id) && 
+                  path.dirname(r.newPath).replace(/\\/g, '/') === newFolderPart
+                );
+
+                if (activeOldFolderWorkflows.length > 0 && movedToNewFolder.length === activeOldFolderWorkflows.length) {
+                  const newName = path.basename(newFolderPart);
+                  const parentPath = path.dirname(newFolderPart).replace(/\\/g, '/');
+                  folderRenames.set(oldFolderId, { newPath: newFolderPart, newName, parentPath });
+                }
               }
             }
           }
@@ -442,43 +458,40 @@ export function pushCommand(program: Command) {
               output.log(`Moving remote workflow: ${rename.name} (from folder ${oldFolderId || 'root'} to ${newFolderId || 'root'})...`);
               try {
                 const code = localCodes[rename.newPath];
-                const response = await mcp.callTool('create_workflow_from_code', {
-                  code,
-                  projectId,
-                  folderId: newFolderId,
-                });
+                if (apiKey && instanceUrl) {
+                  const res = await fetch(`${instanceUrl}/api/v1/workflows/${rename.id}`, {
+                    method: 'PUT',
+                    headers: {
+                      'X-N8N-API-KEY': apiKey,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                      parentFolderId: newFolderId || null,
+                    }),
+                  });
+                  if (!res.ok) {
+                    throw new Error(`Failed to update folder relationship via REST API: ${res.statusText}`);
+                  }
+                  
+                  await mcp.callTool('update_workflow', {
+                    workflowId: rename.id,
+                    code,
+                    name: rename.name,
+                  });
 
-                let newId = extractIdFromResponse(response);
-                if (!newId) {
-                  newId = await findWorkflowIdByName(mcp, projectId, rename.name);
+                  delete syncState.workflows[rename.oldPath];
+                  syncState.workflows[rename.newPath] = {
+                    id: rename.id,
+                    name: rename.name,
+                    localPath: rename.newPath,
+                    contentHash: localHashes[rename.newPath],
+                    remoteUpdatedAt: new Date().toISOString(),
+                    folderId: newFolderId,
+                  };
+                  output.log(`  [MOVED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
+                } else {
+                  throw new Error('REST API key or instance URL is missing. Cannot perform workflow move.');
                 }
-
-                if (!newId) {
-                  throw new Error('Could not retrieve new workflow ID from creation response during move.');
-                }
-
-                output.log(`Archiving old workflow ${rename.id}...`);
-                await mcp.callTool('archive_workflow', {
-                  workflowId: rename.id,
-                });
-
-                const fullPath = path.join(localWorkflowsDir, rename.newPath);
-                const updatedCode = code.replace(
-                  /(workflow\(\s*['"])[a-zA-Z0-9_-]+(['"])/,
-                  `$1${newId}$2`
-                );
-                fs.writeFileSync(fullPath, updatedCode, 'utf-8');
-
-                delete syncState.workflows[rename.oldPath];
-                syncState.workflows[rename.newPath] = {
-                  id: newId,
-                  name: rename.name,
-                  localPath: rename.newPath,
-                  contentHash: calculateHash(updatedCode),
-                  remoteUpdatedAt: new Date().toISOString(),
-                  folderId: newFolderId,
-                };
-                output.log(`  [MOVED] ${rename.oldPath} -> ${rename.newPath} (New ID: ${newId})`);
               } catch (err) {
                 output.error(`Failed to move workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
               }
@@ -581,6 +594,7 @@ export function pushCommand(program: Command) {
 
               if (conflict) {
                 output.warn(`  [CONFLICT] Workflow '${name}' has been modified on remote since last pull. Skipping. Use --force to overwrite remote changes.`);
+                hasConflicts = true;
                 continue;
               }
 
@@ -642,6 +656,9 @@ export function pushCommand(program: Command) {
         });
 
         output.log('Push complete.');
+        if (hasConflicts) {
+          process.exit(3);
+        }
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);

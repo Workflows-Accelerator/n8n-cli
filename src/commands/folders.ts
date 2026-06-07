@@ -30,6 +30,11 @@ export function foldersCommand(program: Command) {
 
           const folders = Array.isArray(response) ? response : (response.folders || []);
 
+          if (output.getJsonMode()) {
+            console.log(JSON.stringify(folders, null, 2));
+            return;
+          }
+
           if (folders.length === 0) {
             output.log('No folders found.');
             return;

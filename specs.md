@@ -109,7 +109,7 @@ my-project/
 
 ## 4. Commands Reference
 
-All commands support a global `--verbose` flag for detailed stderr logging. Additionally, commands automatically run local workflow conversion from `.json` files to `.workflow.ts` when targets or directories are parsed.
+All commands support global options: `--verbose` for detailed stderr logging, `--config <path>` to explicitly specify the configuration file path, and `--json` to format output as structured JSON. Additionally, commands automatically run local workflow conversion from `.json` files to `.workflow.ts` when targets or directories are parsed.
 
 ### `n8ncli init`
 ```bash
@@ -153,7 +153,7 @@ n8ncli push [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url
 - **Updates:** Runs `update_workflow` for modified TS files.
 - **Folder Sync**: If a PostgreSQL `dbUrl` is configured:
   - **Create**: Inserts missing subdirectories into the `folder` table.
-  - **Rename/Move**: Detects moved/renamed directories from workflow renames and updates the database record.
+  - **Rename/Move**: Detects moved/renamed directories from workflow renames and updates the database record. A parent folder is only renamed if all active workflows in it are moved. Individual workflows are moved non-destructively by updating `parentFolderId` via REST API, preserving workflow ID and execution logs.
   - **Prune**: Deletes folders from the database that were previously pulled/synced but are no longer present locally. Only applies to folders within the scope of the configured base project folder.
 
 ### `n8ncli status`
@@ -172,7 +172,7 @@ n8ncli diff <file>
 ```bash
 n8ncli validate [files...]
 ```
-- Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `1` on failure.
+- Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `2` on validation failure.
 
 ### `n8ncli exec`
 ```bash
@@ -231,3 +231,10 @@ Whenever a local workflow file ends with `.json`, execution of commands automati
 - Generates corresponding TypeScript SDK code.
 - Deletes the original `.json` file to prevent duplicate tracking or conflict.
 - Continues execution using the newly converted `.workflow.ts` file path.
+
+### 5.4 Differentiated Exit Codes
+The CLI utilizes exit codes to allow programmatic integration with AI agents:
+- **`0`**: Successful command completion.
+- **`1`**: General runtime execution or connection error.
+- **`2`**: Validation failures (validation errors detected during `validate`).
+- **`3`**: Synchronization conflicts (local/remote modifications diverged during `pull` or `push` without `--force`).

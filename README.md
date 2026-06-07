@@ -111,10 +111,29 @@ n8ncli push
 
 ## AI Agent Integration Guidelines
 
-When using an AI coder (like Claude Code) inside a repo managed by `n8ncli`, the agent does **not** need the n8n-mcp server anymore. Instead, the agent should follow this lifecycle:
+When using an AI coder (like Antigravity or Claude Code) inside a repo managed by `n8ncli`, the agent does **not** need the n8n-mcp server anymore. Instead, the agent should follow this lifecycle:
 
 1. **Discover Patterns:** Read `n8n/references/index.yaml` to find reference workflows and load relevant `.workflow.ts` files to copy code structures.
 2. **Consult Reference:** Run `n8ncli sdk all` to read SDK syntax, rules, and rules for expressions.
 3. **Discover Node Types:** Run `n8ncli nodes types n8n-nodes-base.gmail` to view exact parameter interfaces for the nodes they wish to add.
 4. **Develop & Validate:** Edit local workflow files (written as `.json` or `.workflow.ts` files) and run `n8ncli validate` to check for syntax and schema issues locally (milliseconds instead of slow MCP validation roundtrips).
 5. **Sync & Publish:** Run `n8ncli push` to deploy, then `n8ncli publish <file>` to activate.
+
+### Programmatic & Multi-Tenant VPS Usage
+
+If running under an automated agent inside a remote VPS hosting multiple clients/instances, the CLI provides several features for robust integration:
+
+- **Explicit Config Overrides (`--config <path>`)**: Skip process working directory scanning and specify the config path directly. Useful in multi-tenant environments where commands might run outside the workspace directory.
+  ```bash
+  n8ncli --config /path/to/n8n-cli.json status
+  ```
+- **Structured JSON Mode (`--json`)**: Add the global `--json` flag to receive structured JSON objects on `stdout` instead of human-friendly tables or console logs. Supported on `status`, `validate`, `projects`, and `folders`.
+  ```bash
+  n8ncli status --json
+  ```
+- **Differentiated Exit Codes**:
+  - `0`: Success.
+  - `1`: General execution or connection failure.
+  - `2`: Validation check failure (e.g. `validate` failed).
+  - `3`: Synchronization Conflict (e.g. `pull` or `push` skipped due to local/remote diverged states). Use this to trigger automated merge resolutions.
+

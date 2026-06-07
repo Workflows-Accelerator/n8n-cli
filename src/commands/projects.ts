@@ -28,6 +28,11 @@ export function projectsCommand(program: Command) {
             projects = projects.filter((p: any) => p.type === options.type);
           }
 
+          if (output.getJsonMode()) {
+            console.log(JSON.stringify(projects, null, 2));
+            return;
+          }
+
           if (projects.length === 0) {
             output.log('No projects found.');
             return;

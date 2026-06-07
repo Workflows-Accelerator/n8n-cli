@@ -8,59 +8,141 @@ import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
+async function fetchWorkflowsPaginated(
+  instanceUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+  retries = 3
+): Promise<any[]> {
+  let workflows: any[] = [];
+  let cursor = '';
+  while (true) {
+    const url = `${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250${cursor ? `&cursor=${cursor}` : ''}`;
+    let data: any = null;
+    
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(url, { headers });
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+        if (res.status === 429 && attempt < retries) {
+          output.warn(`Rate limit listing workflows. Retrying in 2 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        if (attempt === retries) {
+          throw new Error(`REST API listing failed with status ${res.status}: ${res.statusText}`);
+        }
+      } catch (err) {
+        if (attempt === retries) throw err;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    const pageWorkflows = Array.isArray(data) ? data : (data.data || data.workflows || []);
+    workflows = workflows.concat(pageWorkflows);
+    
+    const nextCursor = data?.nextCursor;
+    if (!nextCursor || pageWorkflows.length === 0) {
+      break;
+    }
+    cursor = nextCursor;
+  }
+  return workflows;
+}
+
+async function enableMcpForWorkflow(
+  mcp: McpClient,
+  instanceUrl: string,
+  apiKey: string,
+  w: any,
+  enable: boolean
+) {
+  const fullWf = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
+  const updatedSettings = { ...fullWf.settings, availableInMCP: enable };
+  delete updatedSettings.binaryMode;
+
+  const updatedWf = {
+    ...fullWf,
+    settings: updatedSettings,
+  };
+
+  const tsCode = generateWorkflowCode(updatedWf);
+
+  await mcp.callTool('update_workflow', {
+    workflowId: w.id,
+    code: tsCode,
+    name: w.name,
+  });
+}
+
 async function temporarilyEnableMcp(
   mcp: McpClient,
   instanceUrl: string,
   apiKey: string,
-  projectId: string
+  projectId: string,
+  folderId?: string,
+  folderPaths: Record<string, string> = {},
+  folderCache: Record<string, string | null> = {}
 ): Promise<Record<string, boolean>> {
   const headers = {
     'X-N8N-API-KEY': apiKey,
     'Content-Type': 'application/json',
   };
   
-  const listRes = await fetch(`${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250`, { headers });
-  if (!listRes.ok) {
-    throw new Error(`Failed to list workflows via REST API for project ${projectId}: ${listRes.statusText}`);
-  }
-  const listData = (await listRes.json()) as any;
-  const workflows = Array.isArray(listData) ? listData : (listData.data || listData.workflows || []);
+  const workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, headers);
 
-  const mcpCache: Record<string, boolean> = {};
+  const restoreMcpCache: Record<string, boolean> = {};
   for (const w of workflows) {
     if (w.isArchived) continue;
 
     const originalVal = w.settings?.availableInMCP ?? false;
-    mcpCache[w.id] = originalVal;
+    
+    // Resolve folder from cache if available
+    let wFolderId = folderCache[w.id];
+    let isKnownScope = wFolderId !== undefined || !folderId;
+    let isInScope = false;
+    if (isKnownScope) {
+      wFolderId = wFolderId || null;
+      isInScope = !folderId || (wFolderId === folderId) || (wFolderId && folderPaths[wFolderId] !== undefined);
+    }
 
-    if (!originalVal) {
-      output.log(`Temporarily enabling MCP access for workflow '${w.name}'...`);
-      try {
-        const detailRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, { headers });
-        if (!detailRes.ok) throw new Error(`Failed to get details for workflow ${w.id}`);
-        const fullWf = (await detailRes.json()) as any;
-
-        const updatedSettings = { ...fullWf.settings, availableInMCP: true };
-        delete updatedSettings.binaryMode;
-
-        const updatedWf = {
-          ...fullWf,
-          settings: updatedSettings,
-        };
-
-        const tsCode = generateWorkflowCode(updatedWf);
-
-        await mcp.callTool('update_workflow', {
-          workflowId: w.id,
-          code: tsCode,
-          name: w.name,
-        });
-      } catch (err) {
-        output.error(`Failed to temporarily enable MCP for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+    if (isKnownScope) {
+      if (isInScope) {
+        if (!originalVal) {
+          output.log(`Enabling MCP access permanently for in-scope workflow '${w.name}'...`);
+          try {
+            await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true);
+          } catch (e) {
+            output.error(`Failed to enable MCP for workflow '${w.name}': ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }
+      } else {
+        // Out of scope: do nothing!
+      }
+    } else {
+      // Unknown scope: we must temporarily enable MCP, fetch details, check scope, and restore if out of scope
+      if (!originalVal) {
+        output.log(`Temporarily enabling MCP access for unknown scope workflow '${w.name}'...`);
+        try {
+          await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true);
+          
+          const fullWf = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
+          const resolvedFolderId = fullWf.parentFolderId || fullWf.folderId || null;
+          const checkInScope = !folderId || (resolvedFolderId === folderId) || (resolvedFolderId && folderPaths[resolvedFolderId] !== undefined);
+          
+          if (!checkInScope) {
+            restoreMcpCache[w.id] = false;
+          }
+        } catch (err) {
+          output.error(`Failed to resolve scope for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   }
-  return mcpCache;
+  return restoreMcpCache;
 }
 
 async function restoreMcpSettings(
@@ -72,60 +154,13 @@ async function restoreMcpSettings(
   folderId?: string,
   folderPaths: Record<string, string> = {}
 ) {
-  const headers = {
-    'X-N8N-API-KEY': apiKey,
-    'Content-Type': 'application/json',
-  };
-  
-  const listRes = await fetch(`${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250`, { headers });
-  if (!listRes.ok) {
-    return;
-  }
-  const listData = (await listRes.json()) as any;
-  const workflows = Array.isArray(listData) ? listData : (listData.data || listData.workflows || []);
-
-  for (const w of workflows) {
-    if (w.isArchived) continue;
-
-    const originalVal = mcpCache[w.id];
-    if (originalVal === undefined || originalVal === true) {
-      continue;
-    }
-
-    // Check scope via REST API/MCP details to preserve accurate parentFolderId
-    let isInScope = false;
-    try {
-      const details = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
-      const wFolderId = details.parentFolderId || details.folderId;
-      isInScope = !folderId || (wFolderId === folderId) || (wFolderId && folderPaths[wFolderId] !== undefined);
-    } catch (err) {
-      // ignore, assume out of scope to safely restore
-    }
-
-    if (!isInScope) {
-      output.log(`Restoring MCP access to false for out-of-scope workflow '${w.name}'...`);
+  for (const [wId, originalVal] of Object.entries(mcpCache)) {
+    if (originalVal === false) {
+      output.log(`Restoring MCP access to false for workflow ID: ${wId}...`);
       try {
-        const detailRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, { headers });
-        if (!detailRes.ok) throw new Error(`Failed to get details`);
-        const fullWf = (await detailRes.json()) as any;
-
-        const updatedSettings = { ...fullWf.settings, availableInMCP: false };
-        delete updatedSettings.binaryMode;
-
-        const updatedWf = {
-          ...fullWf,
-          settings: updatedSettings,
-        };
-
-        const tsCode = generateWorkflowCode(updatedWf);
-
-        await mcp.callTool('update_workflow', {
-          workflowId: w.id,
-          code: tsCode,
-          name: w.name,
-        });
+        await enableMcpForWorkflow(mcp, instanceUrl, apiKey, { id: wId }, false);
       } catch (err) {
-        output.error(`Failed to restore MCP for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+        output.error(`Failed to restore MCP for workflow ID ${wId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
@@ -265,23 +300,25 @@ export function pullCommand(program: Command) {
         let updatedCount = 0;
         let unchangedCount = 0;
         let skippedCount = 0;
+        let hasConflicts = false;
 
         await withMcp(mcpCommand, accessToken, async (mcp) => {
           let folderPaths: Record<string, string> = {};
           
-          try {
-            // 1. Temporarily enable MCP for the main project
-            mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId);
-
-            // 2. Temporarily enable MCP for the reference project if it is configured, in the same environment, and different
-            if (refProjId && !isIndependentRefEnv) {
-              if (refProjId !== projectId) {
-                refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId);
-              } else {
-                refMcpCache = mainMcpCache;
+          const sigHandler = async () => {
+            output.log('\nProcess interrupted. Restoring MCP settings...');
+            try {
+              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths);
+              if (refProjId && !isIndependentRefEnv && refProjId !== projectId) {
+                await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache);
               }
-            }
+            } catch (e) {}
+            process.exit(1);
+          };
+          process.on('SIGINT', sigHandler);
+          process.on('SIGTERM', sigHandler);
 
+          try {
             // Fetch folders to build path hierarchy and pre-create directories
             try {
               const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId });
@@ -296,6 +333,24 @@ export function pullCommand(program: Command) {
               }
             } catch (err) {
               output.warn(`Failed to fetch folders or create directories: ${err instanceof Error ? err.message : String(err)}`);
+            }
+
+            // 1. Temporarily enable MCP for the main project
+            mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache);
+
+            // 2. Temporarily enable MCP for the reference project if it is configured, in the same environment, and different
+            if (refProjId && !isIndependentRefEnv) {
+              if (refProjId !== projectId) {
+                let refFolderPaths: Record<string, string> = {};
+                try {
+                  const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId: refProjId });
+                  const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+                  refFolderPaths = buildFolderPaths(folders, refFolderId);
+                } catch (e) {}
+                refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId, refFolderId, refFolderPaths, folderCache);
+              } else {
+                refMcpCache = mainMcpCache;
+              }
             }
 
             // 3. Fetch remote workflows list
@@ -322,7 +377,7 @@ export function pullCommand(program: Command) {
                   } else {
                     wFolderId = details.parentFolderId || details.folderId || null;
                     if (!wFolderId && !stateEntry) {
-                      output.warn(`Warning: New workflow '${w.name}' (${w.id}) found but its folder mapping is unknown. It will be placed at the root of the workflows directory. Provide a valid cookie via --cookie to sync folders.`);
+                      output.warn(`Warning: New workflow '${w.name}' (${w.id}) found but its folder mapping is unknown. It will be placed at the root of the workflows directory. Provide a valid database connection URL via --db-url to sync folders.`);
                     }
                   }
                 }
@@ -444,6 +499,7 @@ export function pullCommand(program: Command) {
                   if (isLocalModified && !options.force) {
                     output.warn(`  [CONFLICT] '${relativePath}' has local modifications. Skipping. Use --force to overwrite.`);
                     skippedCount++;
+                    hasConflicts = true;
                   } else {
                     // Write file (overwrite local changes or update to latest remote)
                     fs.mkdirSync(targetDir, { recursive: true });
@@ -554,6 +610,9 @@ export function pullCommand(program: Command) {
               await pullReferences(mcp, config, repoRoot!, folderCache, instanceUrl, apiKey);
             }
           } finally {
+            process.off('SIGINT', sigHandler);
+            process.off('SIGTERM', sigHandler);
+
             output.log('Restoring MCP access settings for the project(s)...');
             try {
               await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths);
@@ -583,7 +642,12 @@ export function pullCommand(program: Command) {
             await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
               let refFolderPaths: Record<string, string> = {};
               try {
-                refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId);
+                try {
+                  const foldersResponse = await refMcp.callToolAndGetJson('search_folders', { projectId: refProjId });
+                  const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+                  refFolderPaths = buildFolderPaths(folders, refFolderId);
+                } catch (e) {}
+                refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, folderCache);
                 await pullReferences(refMcp, config, repoRoot!, folderCache, refInstanceUrl, refApiKey);
               } finally {
                 output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
@@ -609,6 +673,10 @@ export function pullCommand(program: Command) {
         output.log(`  - Updated: ${updatedCount}`);
         output.log(`  - Unchanged: ${unchangedCount}`);
         output.log(`  - Skipped/Conflict: ${skippedCount}`);
+
+        if (hasConflicts) {
+          process.exit(3);
+        }
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
