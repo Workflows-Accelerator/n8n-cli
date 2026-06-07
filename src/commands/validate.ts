@@ -2,16 +2,47 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertTarget } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertTarget, getConnectionInfo } from '../config.js';
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
+import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
+
+function parseLatestVersions(text: string): Record<string, number> {
+  const versions: Record<string, number> = {};
+  const lines = text.split('\n');
+  let currentId: string | null = null;
+
+  for (const line of lines) {
+    const nodeMatch = line.match(/^-\s+([a-zA-Z0-9.-]+)(?:\s+\[TRIGGER\])?\s*$/i);
+    if (nodeMatch) {
+      currentId = nodeMatch[1];
+      continue;
+    }
+    if (currentId) {
+      const versionMatch = line.match(/^\s*Version:\s*([0-9.]+)\s*$/i);
+      if (versionMatch) {
+        versions[currentId] = parseFloat(versionMatch[1]);
+        currentId = null;
+      } else if (line.startsWith('- ')) {
+        currentId = null;
+      }
+    }
+  }
+  return versions;
+}
 
 export function validateCommand(program: Command) {
   program
     .command('validate')
     .description('Validate local workflow TypeScript files against n8n schemas')
     .argument('[files...]', 'specific workflow files to validate (defaults to all under n8n/workflows/)')
-    .action(async (files) => {
+    .option('--no-version-check', 'skip node version validation against n8n instance')
+    .option('--mcp-command <cmd>', 'override MCP server start command')
+    .option('--access-token <token>', 'override n8n access token')
+    .option('--api-key <key>', 'override n8n REST API key')
+    .option('--url <url>', 'override n8n instance URL')
+    .option('--env <name>', 'override environment name')
+    .action(async (files, options) => {
       try {
         const repoRoot = findRepoRoot();
         if (!repoRoot) {
@@ -41,75 +72,163 @@ export function validateCommand(program: Command) {
           return;
         }
 
-        let overallSuccess = true;
-        const jsonResults: any[] = [];
+        // 1. First pass: Parse all workflows to builders and extract used node types
+        const parsedWorkflows: Array<{
+          file: string;
+          relativePath: string;
+          builder?: any;
+          parseError?: string;
+        }> = [];
+
+        const uniqueNodeTypes = new Set<string>();
 
         for (const file of filesToValidate) {
           const relativePath = path.relative(repoRoot, file).replace(/\\/g, '/');
           
           if (!fs.existsSync(file)) {
-            if (output.getJsonMode()) {
-              jsonResults.push({ file: relativePath, exists: false, success: false, errors: ['File does not exist'], warnings: [] });
-            } else {
-              output.error(`File does not exist: ${relativePath}`);
-            }
-            overallSuccess = false;
+            parsedWorkflows.push({ file, relativePath, parseError: 'File does not exist' });
             continue;
           }
 
           try {
             const content = fs.readFileSync(file, 'utf-8');
             const builder = parseWorkflowCodeToBuilder(content);
-            const validation = builder.validate();
+            parsedWorkflows.push({ file, relativePath, builder });
 
-            const hasErrors = validation.errors.length > 0;
-            const hasWarnings = validation.warnings.length > 0;
-
-            if (output.getJsonMode()) {
-              jsonResults.push({
-                file: relativePath,
-                exists: true,
-                success: !hasErrors,
-                errors: validation.errors.map((e: any) => e.message),
-                warnings: validation.warnings.map((w: any) => w.message)
-              });
-            }
-
-            if (hasErrors) {
-              if (!output.getJsonMode()) {
-                output.error(`[INVALID] ${relativePath}`);
-                for (const err of validation.errors) {
-                  output.error(`  - ${err.message}`);
+            try {
+              const workflowJson = builder.toJSON();
+              if (workflowJson.nodes && Array.isArray(workflowJson.nodes)) {
+                for (const node of workflowJson.nodes) {
+                  if (node.type) {
+                    uniqueNodeTypes.add(node.type);
+                  }
                 }
               }
-              overallSuccess = false;
-            } else if (hasWarnings) {
-              if (!output.getJsonMode()) {
-                output.log(`[WARNING] ${relativePath}`);
-                for (const warn of validation.warnings) {
-                  output.warn(`  - ${warn.message}`);
-                }
-              }
-            } else {
-              if (!output.getJsonMode()) {
-                output.log(`[VALID]   ${relativePath}`);
-              }
+            } catch (e) {
+              // ignore JSON serialization issues during type extraction
             }
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            parsedWorkflows.push({ file, relativePath, parseError: errMsg });
+          }
+        }
+
+        // 2. Query MCP for latest versions of unique node types
+        let latestVersions: Record<string, number> = {};
+        if (options.versionCheck !== false && uniqueNodeTypes.size > 0) {
+          try {
+            const { mcpCommand, accessToken } = getConnectionInfo(options);
+            await withMcp(mcpCommand, accessToken, async (mcp) => {
+              const queries = Array.from(uniqueNodeTypes);
+              let text = '';
+              const retries = 3;
+              for (let attempt = 1; attempt <= retries; attempt++) {
+                try {
+                  text = await mcp.callToolAndGetText('search_nodes', { queries });
+                  break;
+                } catch (err) {
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  const isRateLimit = errMsg.includes('Too many requests') || errMsg.includes('429');
+                  if (isRateLimit && attempt < retries) {
+                    output.warn(`Rate limit on MCP search_nodes. Retrying in 2 seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    continue;
+                  }
+                  throw err;
+                }
+              }
+              latestVersions = parseLatestVersions(text);
+            });
+          } catch (err) {
+            output.warn(`Warning: Could not connect to n8n MCP to fetch latest node versions. Skipping version validation. (${err instanceof Error ? err.message : String(err)})`);
+          }
+        }
+
+        // 3. Second pass: Validate each workflow and check node versions
+        let overallSuccess = true;
+        const jsonResults: any[] = [];
+
+        for (const pw of parsedWorkflows) {
+          const relativePath = pw.relativePath;
+
+          if (pw.parseError) {
             if (output.getJsonMode()) {
               jsonResults.push({
                 file: relativePath,
-                exists: true,
+                exists: pw.parseError !== 'File does not exist',
                 success: false,
-                errors: [errMsg],
+                errors: [pw.parseError],
                 warnings: []
               });
             } else {
-              output.error(`[ERROR]   ${relativePath}: Failed to parse file.`);
-              output.error(`  - ${errMsg}`);
+              if (pw.parseError === 'File does not exist') {
+                output.error(`File does not exist: ${relativePath}`);
+              } else {
+                output.error(`[ERROR]   ${relativePath}: Failed to parse file.`);
+                output.error(`  - ${pw.parseError}`);
+              }
             }
             overallSuccess = false;
+            continue;
+          }
+
+          const builder = pw.builder;
+          const validation = builder.validate();
+
+          const errors = validation.errors.map((e: any) => e.message);
+          const warnings = validation.warnings.map((w: any) => w.message);
+
+          // Node version validation
+          if (options.versionCheck !== false) {
+            try {
+              const workflowJson = builder.toJSON();
+              if (workflowJson.nodes && Array.isArray(workflowJson.nodes)) {
+                for (const node of workflowJson.nodes) {
+                  if (node.type && node.typeVersion !== undefined) {
+                    const latest = latestVersions[node.type];
+                    if (latest !== undefined && node.typeVersion < latest) {
+                      errors.push(`Node "${node.name || node.type}" is using version ${node.typeVersion}, but the latest version is ${latest}.`);
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
+          }
+
+          const hasErrors = errors.length > 0;
+          const hasWarnings = warnings.length > 0;
+
+          if (output.getJsonMode()) {
+            jsonResults.push({
+              file: relativePath,
+              exists: true,
+              success: !hasErrors,
+              errors,
+              warnings
+            });
+          }
+
+          if (hasErrors) {
+            if (!output.getJsonMode()) {
+              output.error(`[INVALID] ${relativePath}`);
+              for (const err of errors) {
+                output.error(`  - ${err}`);
+              }
+            }
+            overallSuccess = false;
+          } else if (hasWarnings) {
+            if (!output.getJsonMode()) {
+              output.log(`[WARNING] ${relativePath}`);
+              for (const warn of warnings) {
+                output.warn(`  - ${warn}`);
+              }
+            }
+          } else {
+            if (!output.getJsonMode()) {
+              output.log(`[VALID]   ${relativePath}`);
+            }
           }
         }
 
