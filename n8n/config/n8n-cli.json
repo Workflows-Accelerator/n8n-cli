@@ -4,7 +4,7 @@
   "projectId": "5U5vIHIc1Ug5eVLK",
   "projectName": "Personal",
   "folderId": "Nz4UtQWrmrHMcZIE",
-  "mcpServerCommand": "npx n8n mcp",
+  "mcpServerCommand": "npx -y n8n-mcp",
   "references": {
     "projectId": "5U5vIHIc1Ug5eVLK",
     "projectName": "References",

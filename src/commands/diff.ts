@@ -82,9 +82,11 @@ export function diffCommand(program: Command) {
 
         await withMcp(mcpCommand, accessToken, async (mcp) => {
           // Fetch remote workflow JSON
-          const details = await mcp.callToolAndGetJson('get_workflow_details', {
+          const detailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+            workflowId: entry.id,
             id: entry.id,
           });
+          const details = detailsRes.workflow || detailsRes;
 
           // Generate remote TS code
           const remoteContent = generateWorkflowCode(details);

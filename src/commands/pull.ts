@@ -1,12 +1,123 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { getConnectionInfo } from '../config.js';
+import { getConnectionInfo, buildFolderPaths } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
+
+async function temporarilyEnableMcp(
+  instanceUrl: string,
+  apiKey: string,
+  projectId: string
+): Promise<Record<string, boolean>> {
+  const headers = {
+    'X-N8N-API-KEY': apiKey,
+    'Content-Type': 'application/json',
+  };
+  
+  const listRes = await fetch(`${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250`, { headers });
+  if (!listRes.ok) {
+    throw new Error(`Failed to list workflows via REST API for project ${projectId}: ${listRes.statusText}`);
+  }
+  const listData = (await listRes.json()) as any;
+  const workflows = Array.isArray(listData) ? listData : (listData.data || listData.workflows || []);
+
+  const mcpCache: Record<string, boolean> = {};
+  for (const w of workflows) {
+    const originalVal = w.settings?.availableInMCP ?? false;
+    mcpCache[w.id] = originalVal;
+
+    if (!originalVal) {
+      output.log(`Temporarily enabling MCP access for workflow '${w.name}'...`);
+      try {
+        const detailRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, { headers });
+        if (!detailRes.ok) throw new Error(`Failed to get details for workflow ${w.id}`);
+        const fullWf = (await detailRes.json()) as any;
+
+        const updatedSettings = { ...fullWf.settings, availableInMCP: true };
+        delete updatedSettings.binaryMode;
+
+        const putRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({
+            name: fullWf.name,
+            nodes: fullWf.nodes,
+            connections: fullWf.connections,
+            settings: updatedSettings,
+          }),
+        });
+        if (!putRes.ok) {
+          throw new Error(`PUT failed: ${await putRes.text()}`);
+        }
+      } catch (err) {
+        output.error(`Failed to temporarily enable MCP for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  return mcpCache;
+}
+
+async function restoreMcpSettings(
+  instanceUrl: string,
+  apiKey: string,
+  projectId: string,
+  mcpCache: Record<string, boolean>,
+  folderId?: string
+) {
+  const headers = {
+    'X-N8N-API-KEY': apiKey,
+    'Content-Type': 'application/json',
+  };
+  
+  const listRes = await fetch(`${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250`, { headers });
+  if (!listRes.ok) {
+    return;
+  }
+  const listData = (await listRes.json()) as any;
+  const workflows = Array.isArray(listData) ? listData : (listData.data || listData.workflows || []);
+
+  for (const w of workflows) {
+    const originalVal = mcpCache[w.id];
+    if (originalVal === undefined) {
+      continue;
+    }
+
+    const wFolderId = w.parentFolderId || w.folderId;
+    const isInScope = !folderId || (wFolderId === folderId);
+
+    if (!isInScope && !originalVal) {
+      output.log(`Restoring MCP access to false for out-of-scope workflow '${w.name}'...`);
+      try {
+        const detailRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, { headers });
+        if (!detailRes.ok) throw new Error(`Failed to get details`);
+        const fullWf = (await detailRes.json()) as any;
+
+        const updatedSettings = { ...fullWf.settings, availableInMCP: false };
+        delete updatedSettings.binaryMode;
+
+        const putRes = await fetch(`${instanceUrl}/api/v1/workflows/${w.id}`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({
+            name: fullWf.name,
+            nodes: fullWf.nodes,
+            connections: fullWf.connections,
+            settings: updatedSettings,
+          }),
+        });
+        if (!putRes.ok) {
+          throw new Error(`PUT failed: ${await putRes.text()}`);
+        }
+      } catch (err) {
+        output.error(`Failed to restore MCP for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+}
 
 export function pullCommand(program: Command) {
   program
@@ -17,16 +128,51 @@ export function pullCommand(program: Command) {
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
+      let mainMcpCache: Record<string, boolean> = {};
+      let refMcpCache: Record<string, boolean> = {};
+      let projectId = '';
+      let refProjId = '';
+      let instanceUrl = '';
+      let apiKey = '';
+      let folderId: string | undefined;
+      let refFolderId: string | undefined;
+      let repoRoot: string | null = null;
+      let mcpCommand = '';
+      let accessToken = '';
+
       try {
-        const { mcpCommand, accessToken, config, repoRoot } = getConnectionInfo(options);
+        const connectionInfo = getConnectionInfo(options);
+        repoRoot = connectionInfo.repoRoot;
+        mcpCommand = connectionInfo.mcpCommand;
+        accessToken = connectionInfo.accessToken;
+        const config = connectionInfo.config;
+
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
 
-        const projectId = config.projectId;
-        const folderId = config.folderId;
+        projectId = config.projectId;
+        folderId = config.folderId;
+        refProjId = config.references?.projectId || '';
+        refFolderId = config.references?.folderId;
+        instanceUrl = config.instanceUrl;
+        apiKey = process.env.N8N_API_KEY || '';
+
+        if (!apiKey) {
+          throw new Error('N8N_API_KEY is not defined in the .env file. It is required to manage MCP settings on your n8n instance.');
+        }
 
         output.log(`Pulling workflows for project '${config.projectName}'...`);
+
+        // 1. Temporarily enable MCP for the main project
+        mainMcpCache = await temporarilyEnableMcp(instanceUrl, apiKey, projectId);
+
+        // 2. Temporarily enable MCP for the reference project if it is configured and different
+        if (refProjId && refProjId !== projectId) {
+          refMcpCache = await temporarilyEnableMcp(instanceUrl, apiKey, refProjId);
+        } else if (refProjId === projectId) {
+          refMcpCache = mainMcpCache;
+        }
 
         const syncState = loadSyncState(repoRoot);
         const activeWorkflowIds = new Set<string>();
@@ -37,33 +183,61 @@ export function pullCommand(program: Command) {
         let skippedCount = 0;
 
         await withMcp(mcpCommand, accessToken, async (mcp) => {
+          // Fetch folders to build path hierarchy and pre-create directories
+          let folderPaths: Record<string, string> = {};
+          try {
+            const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId });
+            const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+            folderPaths = buildFolderPaths(folders, folderId);
+            
+            // Create all directories (even empty ones)
+            const localWorkflowsDir = path.join(repoRoot!, 'n8n', 'workflows');
+            fs.mkdirSync(localWorkflowsDir, { recursive: true });
+            for (const subdir of Object.values(folderPaths)) {
+              fs.mkdirSync(path.join(localWorkflowsDir, subdir), { recursive: true });
+            }
+          } catch (err) {
+            output.warn(`Failed to fetch folders or create directories: ${err instanceof Error ? err.message : String(err)}`);
+          }
+
           // 1. Fetch remote workflows list
           const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
             projectId,
-            limit: 250,
+            limit: 200,
           });
 
-          const workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.workflows || []);
+          const workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
+          const availableWorkflows = workflows.filter((w: any) => w.availableInMCP === true);
           
-          // Filter by folder if configured
-          let targetWorkflows = workflows;
-          if (folderId) {
-            targetWorkflows = workflows.filter((w: any) => w.folderId === folderId);
+          // Fetch remote details of all workflows and filter by folder configured
+          const targetWorkflows = [];
+          for (const w of availableWorkflows) {
+            try {
+              const detailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+                workflowId: w.id,
+                id: w.id,
+              });
+              const details = detailsRes.workflow || detailsRes;
+              
+              const wFolderId = details.parentFolderId || details.folderId;
+              if (folderId && wFolderId !== folderId) {
+                continue;
+              }
+              targetWorkflows.push({ w, details });
+            } catch (err) {
+              output.error(`Failed to fetch details for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+              skippedCount++;
+            }
           }
 
           output.log(`Found ${targetWorkflows.length} workflows in scope.`);
 
           const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
-          for (const w of targetWorkflows) {
+          for (const { w, details } of targetWorkflows) {
             activeWorkflowIds.add(w.id);
 
             try {
-              // 2. Fetch full details of each workflow
-              const details = await mcp.callToolAndGetJson('get_workflow_details', {
-                id: w.id,
-              });
-
               // 3. Generate TypeScript SDK code
               const tsCode = generateWorkflowCode(details);
 
@@ -82,14 +256,10 @@ export function pullCommand(program: Command) {
               }
 
               // 5. Determine local file path
-              let folderSubdir = '';
-              if (details.folderName) {
-                folderSubdir = sanitizeFilename(details.folderName);
-              } else if (config.folderName) {
-                folderSubdir = sanitizeFilename(config.folderName);
-              }
+              const wFolderId = details.parentFolderId || details.folderId;
+              const folderSubdir = wFolderId ? (folderPaths[wFolderId] || '') : '';
 
-              const localWorkflowsDir = path.join(repoRoot, 'n8n', 'workflows');
+              const localWorkflowsDir = path.join(repoRoot!, 'n8n', 'workflows');
               const targetDir = folderSubdir ? path.join(localWorkflowsDir, folderSubdir) : localWorkflowsDir;
               const filename = `${sanitizeFilename(details.name)}.workflow.ts`;
               const relativePath = folderSubdir ? `${folderSubdir}/${filename}` : filename;
@@ -114,7 +284,7 @@ export function pullCommand(program: Command) {
                   localPath: relativePath,
                   contentHash: newHash,
                   remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                  folderId: details.folderId,
+                  folderId: details.parentFolderId || details.folderId,
                 };
                 createdCount++;
                 output.log(`  [CREATED] ${relativePath}`);
@@ -128,7 +298,7 @@ export function pullCommand(program: Command) {
                   localPath: relativePath,
                   contentHash: newHash,
                   remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                  folderId: details.folderId,
+                  folderId: details.parentFolderId || details.folderId,
                 };
                 unchangedCount++;
               } else {
@@ -150,7 +320,7 @@ export function pullCommand(program: Command) {
                     localPath: relativePath,
                     contentHash: newHash,
                     remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                    folderId: details.folderId,
+                    folderId: details.parentFolderId || details.folderId,
                   };
                   updatedCount++;
                   output.log(`  [UPDATED] ${relativePath}`);
@@ -163,9 +333,6 @@ export function pullCommand(program: Command) {
           }
 
           // 6. Handle local files that no longer exist on remote
-          // We don't delete them from filesystem automatically (safer), but we clean them up from sync-state if they were deleted on remote.
-          // Wait, actually, let's keep them in sync-state but mark them, or let's clean them up.
-          // If we clean them up from sync-state, n8ncli status/push will see them as untracked new local files.
           for (const [relPath, entry] of Object.entries(syncState.workflows)) {
             if (!activeWorkflowIds.has(entry.id)) {
               output.log(`  [REMOTE DELETED] Workflow '${entry.name}' (${relPath}) was deleted on remote.`);
@@ -175,11 +342,11 @@ export function pullCommand(program: Command) {
 
           // 7. Save sync state
           syncState.lastSync = new Date().toISOString();
-          saveSyncState(repoRoot, syncState);
+          saveSyncState(repoRoot!, syncState);
 
           // 8. Pull references
           if (!options.skipReferences) {
-            await pullReferences(mcp, config, repoRoot);
+            await pullReferences(mcp, config, repoRoot!);
           }
         });
 
@@ -193,6 +360,22 @@ export function pullCommand(program: Command) {
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
+      } finally {
+        if (instanceUrl && apiKey && projectId) {
+          output.log('Restoring MCP access settings for the project(s)...');
+          try {
+            await restoreMcpSettings(instanceUrl, apiKey, projectId, mainMcpCache, folderId);
+          } catch (err) {
+            output.error(`Failed to restore main project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          if (refProjId && refProjId !== projectId) {
+            try {
+              await restoreMcpSettings(instanceUrl, apiKey, refProjId, refMcpCache, refFolderId);
+            } catch (err) {
+              output.error(`Failed to restore references project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+        }
       }
     });
 }

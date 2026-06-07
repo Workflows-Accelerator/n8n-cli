@@ -113,3 +113,47 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
   };
 }
 
+export function buildFolderPaths(folders: any[], targetFolderId?: string): Record<string, string> {
+  const paths: Record<string, string> = {};
+  const folderMap = new Map<string, any>(folders.map(f => [f.id, f]));
+
+  const getPath = (id: string): string[] => {
+    if (id === targetFolderId) {
+      return [];
+    }
+    const folder = folderMap.get(id);
+    if (!folder) {
+      return [];
+    }
+    const parentId = folder.parentFolderId;
+    if (!parentId || parentId === id) {
+      return [folder.name];
+    }
+    return [...getPath(parentId), folder.name];
+  };
+
+  for (const f of folders) {
+    if (targetFolderId) {
+      let current = f;
+      let isDescendant = false;
+      while (current) {
+        if (current.parentFolderId === targetFolderId) {
+          isDescendant = true;
+          break;
+        }
+        current = current.parentFolderId ? folderMap.get(current.parentFolderId) : null;
+      }
+      if (!isDescendant && f.id !== targetFolderId) {
+        continue;
+      }
+    }
+
+    const segments = getPath(f.id);
+    if (segments.length > 0) {
+      const sanitized = segments.map(seg => seg.replace(/[\\/:*?"<>|]/g, '_'));
+      paths[f.id] = sanitized.join('/');
+    }
+  }
+  return paths;
+}
+

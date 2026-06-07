@@ -1,5 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { findRepoRoot, loadConfig } from './config.js';
 
 export function splitCommandString(cmdStr: string): { command: string; args: string[] } {
   // Regex to split command string by space, while keeping quoted substrings together
@@ -21,22 +23,52 @@ export function splitCommandString(cmdStr: string): { command: string; args: str
 
 export class McpClient {
   private client: Client | null = null;
-  private transport: StdioClientTransport | null = null;
+  private transport: StdioClientTransport | StreamableHTTPClientTransport | null = null;
 
   async connect(commandStr: string, accessToken: string) {
-    const { command, args } = splitCommandString(commandStr);
+    let instanceUrl: string | undefined;
 
-    const env = {
-      ...process.env,
-      N8N_ACCESS_TOKEN: accessToken,
-    } as Record<string, string>;
+    if (commandStr.startsWith('http://') || commandStr.startsWith('https://')) {
+      instanceUrl = commandStr;
+    } else {
+      try {
+        const repoRoot = findRepoRoot();
+        if (repoRoot) {
+          const config = loadConfig(repoRoot);
+          instanceUrl = config.instanceUrl;
+        }
+      } catch (err) {
+        // Ignore
+      }
+    }
 
-    this.transport = new StdioClientTransport({
-      command,
-      args,
-      env,
-      stderr: 'inherit', // output server stderr directly to CLI stderr for debugging
-    });
+    if (instanceUrl) {
+      const sseUrl = instanceUrl.endsWith('/mcp-server/http')
+        ? new URL(instanceUrl)
+        : new URL('/mcp-server/http', instanceUrl);
+
+      this.transport = new StreamableHTTPClientTransport(sseUrl, {
+        requestInit: {
+          headers: {
+            'Authorization': `Bearer ${accessToken}`
+          }
+        }
+      });
+    } else {
+      const { command, args } = splitCommandString(commandStr);
+
+      const env = {
+        ...process.env,
+        N8N_ACCESS_TOKEN: accessToken,
+      } as Record<string, string>;
+
+      this.transport = new StdioClientTransport({
+        command,
+        args,
+        env,
+        stderr: 'inherit', // output server stderr directly to CLI stderr for debugging
+      });
+    }
 
     this.client = new Client(
       { name: 'n8n-cli-sync', version: '1.0.0' },

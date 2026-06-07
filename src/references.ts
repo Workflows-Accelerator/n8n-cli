@@ -3,7 +3,7 @@ import path from 'path';
 import YAML from 'yaml';
 import { generateWorkflowCode, parseWorkflowCode } from '@n8n/workflow-sdk';
 import { McpClient } from './mcp-client.js';
-import { N8nCliConfig } from './config.js';
+import { N8nCliConfig, buildFolderPaths } from './config.js';
 import * as output from './output.js';
 
 export interface ReferenceWorkflowInfo {
@@ -29,22 +29,50 @@ export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoR
   }
   fs.mkdirSync(referencesDir, { recursive: true });
 
+  let folderPaths: Record<string, string> = {};
   try {
-    // 1. Fetch reference workflows using MCP
+    const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId: refProjId });
+    const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+    folderPaths = buildFolderPaths(folders, refFolderId);
+    
+    for (const subdir of Object.values(folderPaths)) {
+      fs.mkdirSync(path.join(referencesDir, subdir), { recursive: true });
+    }
+  } catch (err) {
+    output.warn(`Failed to fetch reference folders: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  try {
+    // 2. Fetch reference workflows using MCP
     const response = await mcp.callToolAndGetJson('search_workflows', {
       projectId: refProjId,
       limit: 100,
     });
 
-    const workflows = Array.isArray(response) ? response : (response.workflows || []);
+    const workflows = Array.isArray(response) ? response : (response.data || response.workflows || []);
+    const availableWorkflows = workflows.filter((w: any) => w.availableInMCP === true);
     
-    // Filter by folder if configured
-    let filteredWorkflows = workflows;
-    if (refFolderId) {
-      filteredWorkflows = workflows.filter((w: any) => w.folderId === refFolderId);
+    // Fetch details of all reference workflows and filter by folder
+    const targetWorkflows = [];
+    for (const w of availableWorkflows) {
+      try {
+        const detailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+          workflowId: w.id,
+          id: w.id,
+        });
+        const details = detailsRes.workflow || detailsRes;
+        const wFolderId = details.parentFolderId || details.folderId;
+
+        if (refFolderId && wFolderId !== refFolderId) {
+          continue;
+        }
+        targetWorkflows.push(details);
+      } catch (err) {
+        output.warn(`Failed to fetch details for reference workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
 
-    if (filteredWorkflows.length === 0) {
+    if (targetWorkflows.length === 0) {
       output.warn('No reference workflows found matching the criteria.');
       return;
     }
@@ -54,25 +82,16 @@ export async function pullReferences(mcp: McpClient, config: N8nCliConfig, repoR
     // Helper to clean up filenames
     const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
-    for (const w of filteredWorkflows) {
-      output.log(`  Pulling reference: ${w.name}...`);
+    for (const details of targetWorkflows) {
+      output.log(`  Pulling reference: ${details.name}...`);
       
       try {
-        // Fetch full workflow details
-        const details = await mcp.callToolAndGetJson('get_workflow_details', {
-          id: w.id,
-        });
-
         // Convert JSON to TS code
         const tsCode = generateWorkflowCode(details);
 
         // Determine directory based on folder names or folder hierarchy
-        let folderSubdir = '';
-        if (details.folderName) {
-          folderSubdir = sanitizeFilename(details.folderName);
-        } else if (config.references.folderName) {
-          folderSubdir = sanitizeFilename(config.references.folderName);
-        }
+        const wFolderId = details.parentFolderId || details.folderId;
+        const folderSubdir = wFolderId ? (folderPaths[wFolderId] || '') : '';
 
         const targetDir = folderSubdir ? path.join(referencesDir, folderSubdir) : referencesDir;
         fs.mkdirSync(targetDir, { recursive: true });

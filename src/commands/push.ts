@@ -31,9 +31,9 @@ async function findWorkflowIdByName(mcp: McpClient, projectId: string, name: str
   try {
     const searchResult = await mcp.callToolAndGetJson('search_workflows', {
       projectId,
-      limit: 250,
+      limit: 200,
     });
-    const list = Array.isArray(searchResult) ? searchResult : (searchResult.workflows || []);
+    const list = Array.isArray(searchResult) ? searchResult : (searchResult.data || searchResult.workflows || []);
     const matched = list.find((w: any) => w.name === name);
     return matched ? String(matched.id) : null;
   } catch (err) {
@@ -71,6 +71,7 @@ export function pushCommand(program: Command) {
         const localHashes: Record<string, string> = {};
         const localNames: Record<string, string> = {};
         const localCodes: Record<string, string> = {};
+        const localIds: Record<string, string> = {};
 
         // Parse and validate local files
         let localValidationFailed = false;
@@ -86,6 +87,7 @@ export function pushCommand(program: Command) {
             const validation = builder.validate();
             const workflowJson = builder.toJSON();
             localNames[relPath] = workflowJson.name || path.basename(relPath, '.workflow.ts');
+            localIds[relPath] = workflowJson.id;
 
             if (validation.errors.length > 0) {
               output.error(`Validation failed for local file '${relPath}':`);
@@ -129,7 +131,36 @@ export function pushCommand(program: Command) {
           }
         }
 
-        if (newPaths.length === 0 && modifiedPaths.length === 0 && deletedPaths.length === 0) {
+        // Detect renames (file renamed on disk)
+        const renamedPaths: Array<{ oldPath: string; newPath: string; id: string; name: string }> = [];
+        const unmatchedNewPaths: string[] = [];
+        
+        for (const newPath of newPaths) {
+          const localId = localIds[newPath];
+          const deletedEntryIndex = deletedPaths.findIndex(oldPath => {
+            const entry = syncState.workflows[oldPath];
+            return entry && entry.id === localId;
+          });
+
+          if (deletedEntryIndex !== -1) {
+            const oldPath = deletedPaths[deletedEntryIndex];
+            const entry = syncState.workflows[oldPath];
+            renamedPaths.push({
+              oldPath,
+              newPath,
+              id: entry.id,
+              name: localNames[newPath],
+            });
+            deletedPaths.splice(deletedEntryIndex, 1);
+          } else {
+            unmatchedNewPaths.push(newPath);
+          }
+        }
+        
+        newPaths.length = 0;
+        newPaths.push(...unmatchedNewPaths);
+
+        if (newPaths.length === 0 && modifiedPaths.length === 0 && deletedPaths.length === 0 && renamedPaths.length === 0) {
           output.log('Everything is up-to-date.');
           return;
         }
@@ -138,6 +169,10 @@ export function pushCommand(program: Command) {
         if (newPaths.length > 0) {
           output.log('  New:');
           newPaths.forEach(p => output.log(`    + ${p}`));
+        }
+        if (renamedPaths.length > 0) {
+          output.log('  Renamed:');
+          renamedPaths.forEach(r => output.log(`    -> ${r.oldPath} to ${r.newPath}`));
         }
         if (modifiedPaths.length > 0) {
           output.log('  Modified:');
@@ -183,7 +218,33 @@ export function pushCommand(program: Command) {
             }
           }
 
-          // B. Handle New Workflows
+          // B. Handle Renamed Workflows (file renamed on disk first)
+          for (const rename of renamedPaths) {
+            output.log(`Renaming remote workflow: ${rename.name} (${rename.id})...`);
+            try {
+              const code = localCodes[rename.newPath];
+              await mcp.callTool('update_workflow', {
+                workflowId: rename.id,
+                code,
+                name: rename.name,
+              });
+
+              const oldEntry = syncState.workflows[rename.oldPath];
+              delete syncState.workflows[rename.oldPath];
+              syncState.workflows[rename.newPath] = {
+                ...oldEntry,
+                name: rename.name,
+                localPath: rename.newPath,
+                contentHash: localHashes[rename.newPath],
+                remoteUpdatedAt: new Date().toISOString(),
+              };
+              output.log(`  [RENAMED] ${rename.oldPath} -> ${rename.newPath}`);
+            } catch (err) {
+              output.error(`Failed to rename workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          // C. Handle New Workflows
           for (const relPath of newPaths) {
             const name = localNames[relPath];
             output.log(`Creating new workflow: ${name}...`);
@@ -234,7 +295,7 @@ export function pushCommand(program: Command) {
             }
           }
 
-          // C. Handle Modified Workflows
+          // D. Handle Modified Workflows (includes in-code renames)
           for (const relPath of modifiedPaths) {
             const entry = syncState.workflows[relPath];
             const name = localNames[relPath];
@@ -245,9 +306,11 @@ export function pushCommand(program: Command) {
               let conflict = false;
               if (!options.force) {
                 try {
-                  const remoteDetails = await mcp.callToolAndGetJson('get_workflow_details', {
+                  const remoteDetailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+                    workflowId: entry.id,
                     id: entry.id,
                   });
+                  const remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
                   
                   if (remoteDetails.updatedAt && entry.remoteUpdatedAt !== remoteDetails.updatedAt) {
                     conflict = true;
@@ -266,16 +329,36 @@ export function pushCommand(program: Command) {
               await mcp.callTool('update_workflow', {
                 workflowId: entry.id,
                 code,
+                name,
               });
 
+              let finalRelPath = relPath;
+              if (entry.name !== name) {
+                const folderPart = path.dirname(relPath);
+                const sanitizeFilename = (n: string) => n.replace(/[\\/:*?"<>|]/g, '_');
+                const newFilename = `${sanitizeFilename(name)}.workflow.ts`;
+                const newRelPath = folderPart && folderPart !== '.' ? `${folderPart}/${newFilename}` : newFilename;
+                
+                const oldFullPath = path.join(localWorkflowsDir, relPath);
+                const newFullPath = path.join(localWorkflowsDir, newRelPath);
+                
+                if (oldFullPath !== newFullPath && !fs.existsSync(newFullPath)) {
+                  output.log(`  Renaming local file: ${relPath} -> ${newRelPath}`);
+                  fs.renameSync(oldFullPath, newFullPath);
+                  delete syncState.workflows[relPath];
+                  finalRelPath = newRelPath;
+                }
+              }
+
               // Update sync entry
-              syncState.workflows[relPath] = {
+              syncState.workflows[finalRelPath] = {
                 ...entry,
                 name,
+                localPath: finalRelPath,
                 contentHash: localHashes[relPath],
                 remoteUpdatedAt: new Date().toISOString(), // Will be updated on next pull
               };
-              output.log(`  [UPDATED] ${relPath}`);
+              output.log(`  [UPDATED] ${finalRelPath}`);
             } catch (err) {
               output.error(`Failed to update workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
             }
