@@ -56,7 +56,7 @@ export function diffCommand(program: Command) {
     .option('--access-token <token>', 'override n8n access token')
     .action(async (file, options) => {
       try {
-        const { mcpCommand, accessToken, repoRoot } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, repoRoot, localDir } = getConnectionInfo(options);
         if (!repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
@@ -66,10 +66,10 @@ export function diffCommand(program: Command) {
           throw new Error(`Local file not found at ${fullPath}`);
         }
 
-        const workflowsDir = path.join(repoRoot, 'n8n', 'workflows');
+        const workflowsDir = path.join(repoRoot, localDir, 'workflows');
         const relativePath = path.relative(workflowsDir, fullPath).replace(/\\/g, '/');
 
-        const syncState = loadSyncState(repoRoot);
+        const syncState = loadSyncState(repoRoot, localDir);
         const entry = syncState.workflows[relativePath];
 
         if (!entry) {

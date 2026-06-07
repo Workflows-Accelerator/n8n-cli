@@ -18,7 +18,8 @@ export function initCommand(program: Command) {
     .option('--folder-id <id>', 'n8n folder ID to sync with')
     .option('--ref-project-id <id>', 'n8n reference project ID')
     .option('--ref-folder-id <id>', 'n8n reference folder ID')
-    .option('--mcp-command <cmd>', 'MCP server start command', 'n8n mcp')
+    .option('--mcp-command <cmd>', 'MCP server start command', 'npx -y n8n-mcp')
+    .option('--dir <path>', 'local directory for n8n files (defaults to n8n)', 'n8n')
     .action(async (options) => {
       const repoRoot = process.cwd();
 
@@ -35,7 +36,8 @@ export function initCommand(program: Command) {
       if (!envName) {
         envName = options.env || 'development';
       }
-      output.log(`Initializing n8ncli in current repository for environment '${envName}'...`);
+      const localDir = options.dir || 'n8n';
+      output.log(`Initializing n8ncli in current repository for environment '${envName}' in directory '${localDir}'...`);
 
       // Load global config to check for existing credentials in the selected environment
       const globalConfig = loadGlobalConfig();
@@ -45,7 +47,7 @@ export function initCommand(program: Command) {
       const accessToken = options.accessToken || envConfig.accessToken || globalConfig.accessToken;
       const apiKey = options.apiKey || envConfig.apiKey || globalConfig.apiKey;
       const dbUrl = options.dbUrl || envConfig.dbUrl || globalConfig.dbUrl;
-      const mcpCommand = options.mcpCommand || envConfig.mcpCommand || globalConfig.mcpCommand || 'n8n mcp';
+      const mcpCommand = options.mcpCommand || envConfig.mcpCommand || globalConfig.mcpCommand || 'npx -y n8n-mcp';
 
       if (!instanceUrl) {
         output.error('Error: n8n instance URL is required. Provide it via --url flag or configure it globally.');
@@ -69,9 +71,9 @@ export function initCommand(program: Command) {
       output.log(`Saved global system-level configurations for environment '${envName}'.`);
 
       // 1. Create directories
-      const configDir = path.join(repoRoot, 'n8n', 'config');
-      const workflowsDir = path.join(repoRoot, 'n8n', 'workflows');
-      const referencesDir = path.join(repoRoot, 'n8n', 'references');
+      const configDir = path.join(repoRoot, localDir, 'config');
+      const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+      const referencesDir = path.join(repoRoot, localDir, 'references');
 
       fs.mkdirSync(configDir, { recursive: true });
       fs.mkdirSync(workflowsDir, { recursive: true });
@@ -88,11 +90,11 @@ export function initCommand(program: Command) {
       if (!gitignoreContent.includes('.env')) {
         gitignoreLines.push('.env');
       }
-      if (!gitignoreContent.includes('n8n/config/sync-state.json')) {
-        gitignoreLines.push('n8n/config/sync-state.json');
+      if (!gitignoreContent.includes(`${localDir}/config/sync-state.json`)) {
+        gitignoreLines.push(`${localDir}/config/sync-state.json`);
       }
-      if (!gitignoreContent.includes('n8n/references/')) {
-        gitignoreLines.push('n8n/references/');
+      if (!gitignoreContent.includes(`${localDir}/references/`)) {
+        gitignoreLines.push(`${localDir}/references/`);
       }
 
       if (gitignoreLines.length > 0) {
@@ -164,6 +166,7 @@ export function initCommand(program: Command) {
       // 5. Write config file
       const config: N8nCliConfig = {
         env: envName,
+        localDir: localDir,
         projectId: options.projectId || 'personal',
         projectName,
         folderId: options.folderId,
@@ -180,7 +183,7 @@ export function initCommand(program: Command) {
       }
 
       saveConfig(repoRoot, config);
-      output.log(`Configuration saved to: n8n/config/n8n-cli.json`);
+      output.log(`Configuration saved to: ${localDir}/config/n8n-cli.json`);
       output.log('Initialization complete! You can now run `n8ncli pull` to sync workflows.');
     });
 }

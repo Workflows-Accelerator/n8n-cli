@@ -51,7 +51,7 @@ export function pushCommand(program: Command) {
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
       try {
-        const { mcpCommand, accessToken, config, repoRoot } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, config, repoRoot, localDir } = getConnectionInfo(options);
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
@@ -61,8 +61,8 @@ export function pushCommand(program: Command) {
 
         output.log(`Pushing local changes for project '${config.projectName}'...`);
 
-        const syncState = loadSyncState(repoRoot);
-        const localWorkflowsDir = path.join(repoRoot, 'n8n', 'workflows');
+        const syncState = loadSyncState(repoRoot, localDir);
+        const localWorkflowsDir = path.join(repoRoot, localDir, 'workflows');
 
         // 1. Scan local .workflow.ts files
         const localFiles = glob.sync('**/*.workflow.ts', { cwd: localWorkflowsDir });
@@ -425,7 +425,7 @@ export function pushCommand(program: Command) {
 
           // Save final sync state
           syncState.lastSync = new Date().toISOString();
-          saveSyncState(repoRoot, syncState);
+          saveSyncState(repoRoot, syncState, localDir);
         });
 
         output.log('Push complete.');

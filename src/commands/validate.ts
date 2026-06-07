@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot } from '../config.js';
+import { findRepoRoot, loadConfig } from '../config.js';
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
@@ -18,7 +18,10 @@ export function validateCommand(program: Command) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
 
-        const workflowsDir = path.join(repoRoot, 'n8n', 'workflows');
+        const config = loadConfig(repoRoot);
+        const localDir = config.localDir || 'n8n';
+
+        const workflowsDir = path.join(repoRoot, localDir, 'workflows');
         let filesToValidate: string[] = [];
 
         if (files && files.length > 0) {

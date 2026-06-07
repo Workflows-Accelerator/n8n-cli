@@ -136,6 +136,7 @@ export function pullCommand(program: Command) {
     .command('pull')
     .description('Pull workflows from n8n instance and convert them to TypeScript SDK files')
     .option('--force', 'overwrite local modifications without confirmation', false)
+    .option('--hard', 'delete untracked and out-of-scope local workflows to mirror remote state exactly', false)
     .option('--skip-references', 'skip pulling reference workflows', false)
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
@@ -163,6 +164,7 @@ export function pullCommand(program: Command) {
         apiKey = connectionInfo.apiKey;
         instanceUrl = connectionInfo.instanceUrl;
         const config = connectionInfo.config;
+        const localDir = connectionInfo.localDir;
 
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
@@ -174,7 +176,7 @@ export function pullCommand(program: Command) {
         refFolderId = config.references?.folderId;
 
         // Load folder cache
-        let folderCache = loadFolderCache(repoRoot);
+        let folderCache = loadFolderCache(repoRoot, localDir);
 
         // Resolve PostgreSQL Database URL
         const globalConfig = loadGlobalConfig();
@@ -190,7 +192,7 @@ export function pullCommand(program: Command) {
                 newCache[w.id] = w.parentFolderId || null;
               }
               folderCache = newCache;
-              saveFolderCache(repoRoot, folderCache);
+              saveFolderCache(repoRoot, folderCache, localDir);
               output.log(`Successfully updated folder cache from database with ${Object.keys(folderCache).length} mappings.`);
             } else {
               output.warn('Database query returned no workflows. Folder cache not updated.');
@@ -211,7 +213,7 @@ export function pullCommand(program: Command) {
 
         output.log(`Pulling workflows for project '${config.projectName}'...`);
 
-        const syncState = loadSyncState(repoRoot);
+        const syncState = loadSyncState(repoRoot, localDir);
         const activeWorkflowIds = new Set<string>();
 
         let createdCount = 0;
@@ -240,7 +242,7 @@ export function pullCommand(program: Command) {
               folderPaths = buildFolderPaths(folders, folderId);
               
               // Create all directories (even empty ones)
-              const localWorkflowsDir = path.join(repoRoot!, 'n8n', 'workflows');
+              const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
               fs.mkdirSync(localWorkflowsDir, { recursive: true });
               for (const subdir of Object.values(folderPaths)) {
                 fs.mkdirSync(path.join(localWorkflowsDir, subdir), { recursive: true });
@@ -318,7 +320,7 @@ export function pullCommand(program: Command) {
                 // Determine local file path
                 const folderSubdir = wFolderId ? (folderPaths[wFolderId] || '') : '';
 
-                const localWorkflowsDir = path.join(repoRoot!, 'n8n', 'workflows');
+                const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
                 const targetDir = folderSubdir ? path.join(localWorkflowsDir, folderSubdir) : localWorkflowsDir;
                 const filename = `${sanitizeFilename(details.name)}.workflow.ts`;
                 const relativePath = folderSubdir ? `${folderSubdir}/${filename}` : filename;
@@ -419,17 +421,81 @@ export function pullCommand(program: Command) {
               }
             }
 
-            // Handle local files that no longer exist on remote
+            // Handle local files that no longer exist on remote or are out of scope
             for (const [relPath, entry] of Object.entries(syncState.workflows)) {
               if (!activeWorkflowIds.has(entry.id)) {
-                output.log(`  [REMOTE DELETED] Workflow '${entry.name}' (${relPath}) was deleted on remote.`);
+                const fullPath = path.join(repoRoot!, localDir, 'workflows', relPath);
+                if (fs.existsSync(fullPath)) {
+                  fs.unlinkSync(fullPath);
+                  output.log(`  [CLEANUP] Deleted local file for out-of-scope/deleted workflow: ${relPath}`);
+                  
+                  // Clean up empty parent directories
+                  let dir = path.dirname(fullPath);
+                  const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
+                  while (dir !== localWorkflowsDir) {
+                    if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                      fs.rmdirSync(dir);
+                      dir = path.dirname(dir);
+                    } else {
+                      break;
+                    }
+                  }
+                }
                 delete syncState.workflows[relPath];
+              }
+            }
+
+            // If hard sync is requested, scan for and delete any untracked workflow files on disk
+            if (options.hard) {
+              const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
+              if (fs.existsSync(localWorkflowsDir)) {
+                const getWorkflowFiles = (dir: string): string[] => {
+                  let results: string[] = [];
+                  if (!fs.existsSync(dir)) return results;
+                  const list = fs.readdirSync(dir, { withFileTypes: true });
+                  for (const file of list) {
+                    const filePath = path.join(dir, file.name);
+                    if (file.isDirectory()) {
+                      results = results.concat(getWorkflowFiles(filePath));
+                    } else if (file.isFile() && file.name.endsWith('.workflow.ts')) {
+                      results.push(filePath);
+                    }
+                  }
+                  return results;
+                };
+
+                const files = getWorkflowFiles(localWorkflowsDir);
+                for (const fullPath of files) {
+                  try {
+                    const content = fs.readFileSync(fullPath, 'utf-8');
+                    const match = content.match(/workflow\(\s*['"]([^'"]+)['"]/);
+                    const id = match ? match[1] : null;
+                    if (!id || !activeWorkflowIds.has(id)) {
+                      fs.unlinkSync(fullPath);
+                      const rel = path.relative(localWorkflowsDir, fullPath);
+                      output.log(`  [HARD CLEANUP] Deleted local file: ${rel}`);
+
+                      // Clean up empty parent directories
+                      let dir = path.dirname(fullPath);
+                      while (dir !== localWorkflowsDir) {
+                        if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                          fs.rmdirSync(dir);
+                          dir = path.dirname(dir);
+                        } else {
+                          break;
+                        }
+                      }
+                    }
+                  } catch (e) {
+                    // ignore
+                  }
+                }
               }
             }
 
             // Save sync state
             syncState.lastSync = new Date().toISOString();
-            saveSyncState(repoRoot!, syncState);
+            saveSyncState(repoRoot!, syncState, localDir);
 
             // Pull references
             if (!options.skipReferences) {

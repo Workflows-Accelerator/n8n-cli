@@ -16,8 +16,8 @@ export interface SyncState {
   workflows: Record<string, SyncWorkflowEntry>; // local relative path -> entry
 }
 
-export function loadSyncState(repoRoot: string): SyncState {
-  const syncStatePath = path.join(repoRoot, 'n8n', 'config', 'sync-state.json');
+export function loadSyncState(repoRoot: string, localDir: string = 'n8n'): SyncState {
+  const syncStatePath = path.join(repoRoot, localDir, 'config', 'sync-state.json');
   if (!fs.existsSync(syncStatePath)) {
     return {
       lastSync: new Date(0).toISOString(),
@@ -36,8 +36,8 @@ export function loadSyncState(repoRoot: string): SyncState {
   }
 }
 
-export function saveSyncState(repoRoot: string, state: SyncState) {
-  const configDir = path.join(repoRoot, 'n8n', 'config');
+export function saveSyncState(repoRoot: string, state: SyncState, localDir: string = 'n8n') {
+  const configDir = path.join(repoRoot, localDir, 'config');
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }

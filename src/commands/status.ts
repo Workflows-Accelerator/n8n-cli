@@ -17,8 +17,11 @@ export function statusCommand(program: Command) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
         }
 
-        const syncState = loadSyncState(repoRoot);
-        const workflowsDir = path.join(repoRoot, 'n8n', 'workflows');
+        const config = loadConfig(repoRoot);
+        const localDir = config.localDir || 'n8n';
+
+        const syncState = loadSyncState(repoRoot, localDir);
+        const workflowsDir = path.join(repoRoot, localDir, 'workflows');
 
         if (!fs.existsSync(workflowsDir)) {
           output.log('No workflows directory found. Run `n8ncli pull` first.');

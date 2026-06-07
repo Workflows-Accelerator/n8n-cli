@@ -12,6 +12,7 @@ export interface N8nCliConfig {
   projectName: string;
   folderId?: string;
   folderName?: string;
+  localDir?: string;
   references?: {
     projectId: string;
     projectName: string;
@@ -20,13 +21,113 @@ export interface N8nCliConfig {
   };
 }
 
+export function getConfigPath(repoRoot: string): string {
+  let requestedEnv = '';
+  const envArgIndex = process.argv.indexOf('--env');
+  if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+    requestedEnv = process.argv[envArgIndex + 1];
+  } else {
+    const envArg = process.argv.find(arg => arg.startsWith('--env='));
+    if (envArg) {
+      requestedEnv = envArg.split('=')[1];
+    }
+  }
+
+  // 1. If an environment is requested, find the config file that matches it
+  if (requestedEnv) {
+    // Check root
+    const rootPath = path.join(repoRoot, 'n8n-cli.json');
+    if (fs.existsSync(rootPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(rootPath, 'utf-8'));
+        if (parsed.env === requestedEnv || parsed.environmentName === requestedEnv) {
+          return rootPath;
+        }
+      } catch (e) {}
+    }
+
+    // Check default n8n
+    const defaultPath = path.join(repoRoot, 'n8n', 'config', 'n8n-cli.json');
+    if (fs.existsSync(defaultPath)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(defaultPath, 'utf-8'));
+        if (parsed.env === requestedEnv || parsed.environmentName === requestedEnv) {
+          return defaultPath;
+        }
+      } catch (e) {}
+    }
+
+    // Check custom subdirectories
+    try {
+      const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const p = path.join(repoRoot, entry.name, 'config', 'n8n-cli.json');
+          if (fs.existsSync(p)) {
+            try {
+              const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
+              if (parsed.env === requestedEnv || parsed.environmentName === requestedEnv) {
+                return p;
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. Fallback to normal lookup if no match was found or no environment requested
+  const rootPath = path.join(repoRoot, 'n8n-cli.json');
+  if (fs.existsSync(rootPath)) {
+    return rootPath;
+  }
+  
+  const defaultPath = path.join(repoRoot, 'n8n', 'config', 'n8n-cli.json');
+  if (fs.existsSync(defaultPath)) {
+    return defaultPath;
+  }
+  
+  try {
+    const entries = fs.readdirSync(repoRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const possibleConfig = path.join(repoRoot, entry.name, 'config', 'n8n-cli.json');
+        if (fs.existsSync(possibleConfig)) {
+          return possibleConfig;
+        }
+      }
+    }
+  } catch (e) {}
+
+  return defaultPath;
+}
+
 export function findRepoRoot(startDir: string = process.cwd()): string | null {
   let currentDir = path.resolve(startDir);
   while (true) {
-    const configPath = path.join(currentDir, 'n8n', 'config', 'n8n-cli.json');
-    if (fs.existsSync(configPath)) {
+    // 1. Check if there is an n8n-cli.json in the currentDir root
+    if (fs.existsSync(path.join(currentDir, 'n8n-cli.json'))) {
       return currentDir;
     }
+
+    // 2. Check n8n/config/n8n-cli.json
+    if (fs.existsSync(path.join(currentDir, 'n8n', 'config', 'n8n-cli.json'))) {
+      return currentDir;
+    }
+
+    // 3. Scan subdirectories of currentDir for <dir>/config/n8n-cli.json
+    try {
+      const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory()) {
+          const possibleConfig = path.join(currentDir, entry.name, 'config', 'n8n-cli.json');
+          if (fs.existsSync(possibleConfig)) {
+            return currentDir;
+          }
+        }
+      }
+    } catch (e) {}
+
     const parent = path.dirname(currentDir);
     if (parent === currentDir) {
       break;
@@ -44,13 +145,23 @@ export function loadEnv(repoRoot: string) {
 }
 
 export function loadConfig(repoRoot: string): N8nCliConfig {
-  const configPath = path.join(repoRoot, 'n8n', 'config', 'n8n-cli.json');
+  const configPath = getConfigPath(repoRoot);
   if (!fs.existsSync(configPath)) {
-    throw new Error(`Configuration file not found at ${configPath}. Run 'n8ncli init' first.`);
+    throw new Error(`Configuration file not found. Run 'n8ncli init' first.`);
   }
   try {
     const content = fs.readFileSync(configPath, 'utf-8');
-    return JSON.parse(content) as N8nCliConfig;
+    const parsed = JSON.parse(content) as N8nCliConfig;
+    if (!parsed.localDir) {
+      const relative = path.relative(repoRoot, configPath);
+      const segments = relative.split(path.sep);
+      if (segments.length > 1 && segments[0] !== 'n8n-cli.json') {
+        parsed.localDir = segments[0];
+      } else {
+        parsed.localDir = 'n8n';
+      }
+    }
+    return parsed;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Failed to read/parse configuration at ${configPath}: ${message}`);
@@ -58,7 +169,8 @@ export function loadConfig(repoRoot: string): N8nCliConfig {
 }
 
 export function saveConfig(repoRoot: string, config: N8nCliConfig) {
-  const configDir = path.join(repoRoot, 'n8n', 'config');
+  const localDir = config.localDir || 'n8n';
+  const configDir = path.join(repoRoot, localDir, 'config');
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
@@ -73,6 +185,7 @@ export interface ConnectionInfo {
   repoRoot: string | null;
   apiKey: string;
   instanceUrl: string;
+  localDir: string;
 }
 
 export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: string; apiKey?: string; url?: string; env?: string } = {}): ConnectionInfo {
@@ -113,7 +226,7 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
   }
   const envConfig = globalConfig.environments?.[envKey] || {};
 
-  let mcpCommand = options.mcpCommand || process.env.N8N_MCP_COMMAND || envConfig.mcpCommand || globalConfig.mcpCommand || 'n8n mcp';
+  let mcpCommand = options.mcpCommand || process.env.N8N_MCP_COMMAND || envConfig.mcpCommand || globalConfig.mcpCommand || 'npx -y n8n-mcp';
   let accessToken = options.accessToken || process.env.N8N_ACCESS_TOKEN || envConfig.accessToken || globalConfig.accessToken;
   let apiKey = options.apiKey || process.env.N8N_API_KEY || envConfig.apiKey || globalConfig.apiKey || '';
   let instanceUrl = options.url || process.env.N8N_INSTANCE_URL || envConfig.instanceUrl || globalConfig.instanceUrl || '';
@@ -130,6 +243,8 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     );
   }
 
+  const localDir = config?.localDir || 'n8n';
+
   return {
     mcpCommand,
     accessToken,
@@ -137,6 +252,7 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     repoRoot,
     apiKey,
     instanceUrl,
+    localDir,
   };
 }
 
@@ -184,8 +300,8 @@ export function buildFolderPaths(folders: any[], targetFolderId?: string): Recor
   return paths;
 }
 
-export function loadFolderCache(repoRoot: string): Record<string, string | null> {
-  const cachePath = path.join(repoRoot, 'n8n', 'config', 'workflow-folders.json');
+export function loadFolderCache(repoRoot: string, localDir: string = 'n8n'): Record<string, string | null> {
+  const cachePath = path.join(repoRoot, localDir, 'config', 'workflow-folders.json');
   if (fs.existsSync(cachePath)) {
     try {
       return JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
@@ -196,8 +312,8 @@ export function loadFolderCache(repoRoot: string): Record<string, string | null>
   return {};
 }
 
-export function saveFolderCache(repoRoot: string, cache: Record<string, string | null>) {
-  const cacheDir = path.join(repoRoot, 'n8n', 'config');
+export function saveFolderCache(repoRoot: string, cache: Record<string, string | null>, localDir: string = 'n8n') {
+  const cacheDir = path.join(repoRoot, localDir, 'config');
   if (!fs.existsSync(cacheDir)) {
     fs.mkdirSync(cacheDir, { recursive: true });
   }
