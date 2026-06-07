@@ -1,0 +1,38 @@
+{
+  "name": "n8ncli",
+  "version": "1.0.0",
+  "description": "AI-First n8n Workflow CLI",
+  "type": "module",
+  "main": "./dist/cli.js",
+  "bin": {
+    "n8ncli": "./dist/cli.js"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "n8n",
+    "mcp",
+    "cli",
+    "workflow",
+    "sdk"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.4.1",
+    "@n8n/workflow-sdk": "^0.16.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "glob": "^11.0.0",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.9",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

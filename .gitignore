@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+.DS_Store
+*.log
+*.tsbuildinfo
+
+# n8ncli ignored files
+n8n/config/sync-state.json
+n8n/references/

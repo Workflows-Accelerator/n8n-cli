@@ -1,0 +1,52 @@
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+
+export interface SyncWorkflowEntry {
+  id: string;
+  name: string;
+  localPath: string;       // relative to n8n/workflows/ (with forward slashes for cross-platform)
+  contentHash: string;     // hash of local file content
+  remoteUpdatedAt: string; // remote updatedAt ISO timestamp
+  folderId?: string;
+}
+
+export interface SyncState {
+  lastSync: string; // ISO timestamp
+  workflows: Record<string, SyncWorkflowEntry>; // local relative path -> entry
+}
+
+export function loadSyncState(repoRoot: string): SyncState {
+  const syncStatePath = path.join(repoRoot, 'n8n', 'config', 'sync-state.json');
+  if (!fs.existsSync(syncStatePath)) {
+    return {
+      lastSync: new Date(0).toISOString(),
+      workflows: {},
+    };
+  }
+  try {
+    const content = fs.readFileSync(syncStatePath, 'utf-8');
+    return JSON.parse(content) as SyncState;
+  } catch (err) {
+    // Return empty state if reading/parsing fails
+    return {
+      lastSync: new Date(0).toISOString(),
+      workflows: {},
+    };
+  }
+}
+
+export function saveSyncState(repoRoot: string, state: SyncState) {
+  const configDir = path.join(repoRoot, 'n8n', 'config');
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+  const syncStatePath = path.join(configDir, 'sync-state.json');
+  fs.writeFileSync(syncStatePath, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+export function calculateHash(content: string): string {
+  // Normalize line endings to avoid git crlf/lf hashing discrepancies
+  const normalized = content.replace(/\r\n/g, '\n');
+  return crypto.createHash('sha256').update(normalized).digest('hex');
+}
