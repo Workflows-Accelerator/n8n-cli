@@ -28,6 +28,7 @@
     "dotenv": "^16.4.5",
     "glob": "^11.0.0",
     "pg": "^8.21.0",
+    "spell-checker-js": "^1.2.6",
     "yaml": "^2.6.1"
   },
   "devDependencies": {

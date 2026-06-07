@@ -15,6 +15,9 @@ import { publishCommand } from './commands/publish.js';
 import { unpublishCommand } from './commands/unpublish.js';
 import { nodesCommand } from './commands/nodes.js';
 import { sdkCommand } from './commands/sdk.js';
+import { environmentsCommand } from './commands/environments.js';
+import { importSkillCommand } from './commands/import-skill.js';
+import { lintCommand } from './commands/lint.js';
 
 const program = new Command();
 
@@ -51,6 +54,9 @@ publishCommand(program);
 unpublishCommand(program);
 nodesCommand(program);
 sdkCommand(program);
+environmentsCommand(program);
+importSkillCommand(program);
+lintCommand(program);
 
 // Parse arguments asynchronously
 program.parseAsync(process.argv).catch(err => {

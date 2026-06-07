@@ -6,6 +6,7 @@ import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertT
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
+import { loadStandards, validateWorkflowAgainstStandards } from '../lint-engine.js';
 
 function parseLatestVersions(text: string): Record<string, number> {
   const versions: Record<string, number> = {};
@@ -42,6 +43,7 @@ export function validateCommand(program: Command) {
     .option('--api-key <key>', 'override n8n REST API key')
     .option('--url <url>', 'override n8n instance URL')
     .option('--env <name>', 'override environment name')
+    .option('--lint', 'also run standards lint checks alongside validation')
     .action(async (files, options) => {
       try {
         const repoRoot = findRepoRoot();
@@ -177,6 +179,18 @@ export function validateCommand(program: Command) {
 
           const errors = validation.errors.map((e: any) => e.message);
           const warnings = validation.warnings.map((w: any) => w.message);
+
+          if (options.lint) {
+            try {
+              const standards = loadStandards(repoRoot);
+              const workflowJson = builder.toJSON();
+              const lintRes = validateWorkflowAgainstStandards(workflowJson, standards, relativePath);
+              errors.push(...lintRes.errors);
+              warnings.push(...lintRes.warnings);
+            } catch (err) {
+              errors.push(`Lint checks failed to run: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
 
           // Node version validation
           if (options.versionCheck !== false) {

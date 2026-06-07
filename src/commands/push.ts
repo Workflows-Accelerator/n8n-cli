@@ -8,6 +8,7 @@ import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
+import { loadStandards, validateWorkflowAgainstStandards } from '../lint-engine.js';
 
 function extractIdFromResponse(response: any): string | null {
   if (!response) return null;
@@ -113,6 +114,25 @@ export function pushCommand(program: Command) {
               for (const err of validation.errors) {
                 output.error(`  - ${err.message}`);
               }
+              localValidationFailed = true;
+            }
+
+            try {
+              const standards = loadStandards(repoRoot);
+              const lintRes = validateWorkflowAgainstStandards(
+                workflowJson,
+                standards,
+                path.join(localDir, 'workflows', relPath).replace(/\\/g, '/')
+              );
+              if (lintRes.errors.length > 0) {
+                output.error(`Lint standards violations for local file '${relPath}':`);
+                for (const err of lintRes.errors) {
+                  output.error(`  - ${err}`);
+                }
+                localValidationFailed = true;
+              }
+            } catch (err) {
+              output.error(`Failed to run lint checks for local file '${relPath}': ${err instanceof Error ? err.message : String(err)}`);
               localValidationFailed = true;
             }
           } catch (err) {

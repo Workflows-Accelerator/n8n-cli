@@ -4,6 +4,8 @@ import path from 'path';
 import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
+import { writeSkillFile } from './import-skill.js';
+import { saveDefaultStandards } from '../lint-engine.js';
 
 export function initCommand(program: Command) {
   program
@@ -227,6 +229,23 @@ export function initCommand(program: Command) {
 
       saveConfig(repoRoot, config);
       output.log(`Configuration saved to: ${localDir}/config/n8n-cli.json`);
+
+      // Automatically write the agent skill to .agents/skills/n8n/SKILL.md
+      try {
+        const relativePath = writeSkillFile(repoRoot);
+        output.log(`Automatically imported n8n CLI skill to: ${relativePath}`);
+      } catch (err) {
+        output.warn(`Could not automatically create agent skill: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      // Automatically generate n8n-standards.json if not present
+      try {
+        saveDefaultStandards(repoRoot);
+        output.log(`Initialized default style standards in ${localDir}/config/n8n-standards.json`);
+      } catch (err) {
+        output.warn(`Could not initialize n8n-standards.json: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       output.log('Initialization complete! You can now run `n8ncli pull` to sync workflows.');
     });
 }

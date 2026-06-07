@@ -1,0 +1,860 @@
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { generateWorkflowCode } from '@n8n/workflow-sdk';
+import { createRequire } from 'module';
+import * as output from './output.js';
+const require = createRequire(import.meta.url);
+
+// Safe require for spell-checker-js
+let spell: any = null;
+let isSpellcheckLoaded = false;
+try {
+  spell = require('spell-checker-js');
+  spell.load('en');
+  isSpellcheckLoaded = true;
+} catch (e) {
+  // Silent fallback
+}
+
+export interface StandardsConfig {
+  folders?: {
+    naming?: {
+      regex?: string;
+      errorMessage?: string;
+    };
+  };
+  workflows?: {
+    naming?: {
+      regex?: string;
+      errorMessage?: string;
+    };
+    requireDescription?: boolean;
+    requireTags?: boolean;
+    minTags?: number;
+    bannedNames?: string[];
+  };
+  nodes?: {
+    naming?: {
+      tolerateDefaultNames?: boolean;
+      duplicateSuffixFormat?: 'parenthesis' | 'simple';
+      regex?: string;
+      errorMessage?: string;
+    };
+    notes?: {
+      requireNotes?: boolean;
+      requireNotesForTypes?: string[];
+      errorMessage?: string;
+    };
+    stickyNotes?: {
+      ignore?: boolean;
+      markdownValidation?: boolean;
+      colors?: {
+        needFixing?: number;
+        specs?: number;
+        futureImprovements?: number;
+        needsHumanHelp?: number;
+      };
+    };
+  };
+  variables?: {
+    naming?: {
+      convention?: 'camelCase' | 'PascalCase' | 'snake_case';
+      errorMessage?: string;
+    };
+  };
+  language?: {
+    enabled?: boolean;
+    expected?: string;
+    checkFields?: string[];
+    allowedWords?: string[];
+    errorMessage?: string;
+  };
+  ignore?: {
+    workflows?: string[];
+    folders?: string[];
+    nodes?: string[];
+    variables?: string[];
+    words?: string[];
+  };
+}
+
+export const DEFAULT_STANDARDS: StandardsConfig = {
+  folders: {
+    naming: {
+      regex: '^[A-Z][a-zA-Z0-9\\s()-]*$',
+      errorMessage: 'Folder names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, or parentheses.'
+    }
+  },
+  workflows: {
+    naming: {
+      regex: '^[A-Z][a-zA-Z0-9\\s()-]*$',
+      errorMessage: 'Workflow names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, or parentheses.'
+    },
+    requireDescription: true,
+    requireTags: false,
+    minTags: 0,
+    bannedNames: []
+  },
+  nodes: {
+    naming: {
+      tolerateDefaultNames: true,
+      duplicateSuffixFormat: 'parenthesis',
+      regex: '^[A-Z][a-zA-Z0-9\\s()\\-:]*$',
+      errorMessage: 'Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, or colons.'
+    },
+    notes: {
+      requireNotes: false,
+      requireNotesForTypes: ['n8n-nodes-base.code'],
+      errorMessage: 'Notes are required for Code nodes to explain their logic.'
+    },
+    stickyNotes: {
+      ignore: false,
+      markdownValidation: true,
+      colors: {
+        needFixing: 1,
+        specs: 2,
+        futureImprovements: 3,
+        needsHumanHelp: 4
+      }
+    }
+  },
+  variables: {
+    naming: {
+      convention: 'camelCase',
+      errorMessage: 'Variables declared in Set/Edit Fields nodes must be in camelCase.'
+    }
+  },
+  language: {
+    enabled: true,
+    expected: 'en',
+    checkFields: ['workflow.description', 'node.notes', 'node.name', 'variable.name'],
+    allowedWords: [],
+    errorMessage: 'Text, names, and variables must be written in English.'
+  },
+  ignore: {
+    workflows: [],
+    folders: [],
+    nodes: [],
+    variables: [],
+    words: []
+  }
+};
+
+const DEFAULT_ALLOWED_TECHNICAL_WORDS = new Set([
+  'n8n', 'mcp', 'url', 'http', 'api', 'json', 'db', 'id', 'uuid', 'sdk', 
+  'ts', 'js', 'oauth', 'jwt', 'ssl', 'tls', 'xml', 'html', 'csv', 'cron', 
+  'get', 'post', 'put', 'delete', 'patch', 'git', 'cli', 'env', 'config', 
+  'ref', 'port', 'host', 'ip', 'dns', 'uri', 'graphql', 'rest', 'ftp', 
+  'sftp', 'ssh', 'regex', 'regexp', 'sql', 'postgres', 'mysql', 'mongodb', 
+  'redis', 'aws', 's3', 'gcp', 'azure', 'webhook', 'webhooks', 'headers', 
+  'params', 'body', 'query', 'payload', 'token', 'auth', 'casing', 'camel', 
+  'snake', 'pascal', 'string', 'boolean', 'integer', 'number', 'array', 
+  'object', 'null', 'undefined', 'async', 'await', 'const', 'let', 'var', 
+  'func', 'function', 'class', 'import', 'export', 'node', 'nodes', 'workflow', 
+  'workflows', 'folder', 'folders', 'project', 'projects', 'error', 'errors', 
+  'warn', 'warning', 'info', 'log', 'logs', 'debug', 'trace', 'client', 'server', 
+  'response', 'request', 'status', 'credential', 'credentials', 'trigger', 
+  'active', 'inactive', 'publish', 'unpublish', 'set', 'edit', 'fields', 
+  'email', 'slack', 'gmail', 'github', 'gitlab', 'hubspot', 'trello', 'asana', 
+  'jira', 'notion', 'airtable', 'stripe', 'paypal', 'mailgun', 'sendgrid', 
+  'twilio', 'telegram', 'discord', 'whatsapp', 'google', 'drive', 'sheets', 
+  'calendar', 'docs', 'forms', 'meet', 'chat', 'fit', 'photos', 'keep'
+]);
+
+export function getStandardsPath(repoRoot: string): string {
+  const localConfig = path.join(repoRoot, 'n8n', 'config', 'n8n-standards.json');
+  if (fs.existsSync(localConfig)) {
+    return localConfig;
+  }
+  const rootConfig = path.join(repoRoot, 'n8n-standards.json');
+  if (fs.existsSync(rootConfig)) {
+    return rootConfig;
+  }
+  return localConfig;
+}
+
+export function loadStandards(repoRoot: string): StandardsConfig {
+  const p = getStandardsPath(repoRoot);
+  if (fs.existsSync(p)) {
+    try {
+      const content = fs.readFileSync(p, 'utf-8');
+      return JSON.parse(content) as StandardsConfig;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Check global standards file fallback
+  const globalConfig = path.join(os.homedir(), '.n8n-standards.json');
+  if (fs.existsSync(globalConfig)) {
+    try {
+      const content = fs.readFileSync(globalConfig, 'utf-8');
+      return JSON.parse(content) as StandardsConfig;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  return DEFAULT_STANDARDS;
+}
+
+export function saveDefaultStandards(repoRoot: string) {
+  const p = getStandardsPath(repoRoot);
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(p, JSON.stringify(DEFAULT_STANDARDS, null, 2), 'utf-8');
+}
+
+export function checkWordSpelling(word: string): boolean {
+  if (!isSpellcheckLoaded || !spell) return true;
+  const cleanWord = word.trim().replace(/[^a-zA-Z]/g, '');
+  if (!cleanWord || cleanWord.length <= 1) return true; // Ignore single letters
+  try {
+    const wrong = spell.check(cleanWord);
+    return wrong.length === 0;
+  } catch (e) {
+    return true;
+  }
+}
+
+export function splitIdentifierIntoWords(identifier: string): string[] {
+  const spaced = identifier
+    .replace(/[-_]+/g, ' ')
+    .replace(/([A-Z][a-z])/g, ' $1')
+    .replace(/([a-z])([A-Z])/g, '$1 $2');
+  
+  return spaced
+    .split(/[^a-zA-Z]/)
+    .map(w => w.trim())
+    .filter(w => w.length > 0);
+}
+
+export function isWordEnglish(word: string, customAllowedWords: string[] = [], ignoredWords: string[] = []): boolean {
+  const lower = word.toLowerCase();
+  if (DEFAULT_ALLOWED_TECHNICAL_WORDS.has(lower)) {
+    return true;
+  }
+  if (customAllowedWords.some(w => w.toLowerCase() === lower)) {
+    return true;
+  }
+  if (ignoredWords.some(w => w.toLowerCase() === lower)) {
+    return true;
+  }
+  return checkWordSpelling(lower);
+}
+
+export function checkSentenceSpelling(
+  text: string,
+  customAllowedWords: string[] = [],
+  ignoredWords: string[] = []
+): { ok: boolean; invalidWords: string[] } {
+  if (!isSpellcheckLoaded || !spell) return { ok: true, invalidWords: [] };
+  
+  const words = text
+    .replace(/[^a-zA-Z\s'-]/g, ' ')
+    .split(/\s+/)
+    .map(w => w.trim())
+    .filter(w => w.length > 0);
+  
+  const invalidWords: string[] = [];
+  for (const word of words) {
+    if (!isWordEnglish(word, customAllowedWords, ignoredWords)) {
+      invalidWords.push(word);
+    }
+  }
+  
+  return {
+    ok: invalidWords.length === 0,
+    invalidWords
+  };
+}
+
+function validateMarkdown(content: string): string[] {
+  const errors: string[] = [];
+  
+  const codeBlockCount = (content.match(/```/g) || []).length;
+  if (codeBlockCount % 2 !== 0) {
+    errors.push("Unclosed code block (odd number of triple backticks).");
+  }
+
+  const inlineCodeCount = (content.match(/`/g) || []).length;
+  const singleBackticks = inlineCodeCount - (codeBlockCount * 3);
+  if (singleBackticks > 0 && singleBackticks % 2 !== 0) {
+    errors.push("Unclosed inline code block (odd number of single backticks).");
+  }
+
+  const openBrackets = (content.match(/\[/g) || []).length;
+  const closeBrackets = (content.match(/\]/g) || []).length;
+  if (openBrackets !== closeBrackets) {
+    errors.push(`Mismatched link brackets: found ${openBrackets} '[' and ${closeBrackets} ']'.`);
+  }
+
+  return errors;
+}
+
+function isPatternMatched(target: string, pattern: string): boolean {
+  if (pattern === target) return true;
+  try {
+    let p = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '.*')
+      .replace(/\*/g, '[^/]*');
+    const regex = new RegExp(`^${p}$`, 'i');
+    return regex.test(target);
+  } catch (e) {
+    return false;
+  }
+}
+
+function isIgnored(target: string, ignoreList: string[] | undefined): boolean {
+  if (!target || !ignoreList || ignoreList.length === 0) return false;
+  return ignoreList.some(pattern => isPatternMatched(target, pattern));
+}
+
+function extractVariableNames(parameters: any): string[] {
+  const names: string[] = [];
+  
+  function recurse(obj: any) {
+    if (!obj || typeof obj !== 'object') return;
+    
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        if (item && typeof item === 'object') {
+          if (typeof item.name === 'string') {
+            names.push(item.name);
+          }
+          recurse(item);
+        }
+      }
+    } else {
+      for (const key of Object.keys(obj)) {
+        recurse(obj[key]);
+      }
+    }
+  }
+  
+  recurse(parameters);
+  return names;
+}
+
+function checkCasing(name: string, convention: 'camelCase' | 'PascalCase' | 'snake_case'): boolean {
+  if (convention === 'camelCase') {
+    return /^[a-z][a-zA-Z0-9]*$/.test(name);
+  }
+  if (convention === 'PascalCase') {
+    return /^[A-Z][a-zA-Z0-9]*$/.test(name);
+  }
+  if (convention === 'snake_case') {
+    return /^[a-z0-9]+(_[a-z0-9]+)*$/.test(name);
+  }
+  return true;
+}
+
+export function toSmartTitleCase(str: string, standards?: StandardsConfig): string {
+  if (!str) return str;
+
+  const TRANSITION_WORDS = new Set([
+    'a', 'an', 'the', 'and', 'but', 'for', 'or', 'nor', 'to', 'with', 
+    'about', 'in', 'on', 'at', 'by', 'from', 'of', 'into', 'onto', 
+    'than', 'via', 'within', 'without', 'as'
+  ]);
+
+  const COMMON_ABBREVIATIONS = new Map<string, string>([
+    ['api', 'API'],
+    ['json', 'JSON'],
+    ['http', 'HTTP'],
+    ['xml', 'XML'],
+    ['html', 'HTML'],
+    ['db', 'DB'],
+    ['url', 'URL'],
+    ['id', 'ID'],
+    ['n8n', 'n8n'],
+    ['mcp', 'MCP'],
+    ['oauth', 'OAuth'],
+    ['uuid', 'UUID']
+  ]);
+
+  const allowedWords = new Set<string>();
+  if (standards?.language?.allowedWords) {
+    for (const w of standards.language.allowedWords) allowedWords.add(w.toLowerCase());
+  }
+  if (standards?.ignore?.words) {
+    for (const w of standards.ignore.words) allowedWords.add(w.toLowerCase());
+  }
+
+  const tokens = str.split(/([^\p{L}\d]+)/u);
+  const wordIndices: number[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (/[\p{L}\d]/u.test(tokens[i])) {
+      wordIndices.push(i);
+    }
+  }
+
+  if (wordIndices.length === 0) return str;
+
+  const firstWordIndex = wordIndices[0];
+  const lastWordIndex = wordIndices[wordIndices.length - 1];
+
+  for (const idx of wordIndices) {
+    const token = tokens[idx];
+    const lowerToken = token.toLowerCase();
+
+    let matchedWord = '';
+    if (standards?.language?.allowedWords) {
+      const found = standards.language.allowedWords.find(w => w.toLowerCase() === lowerToken);
+      if (found) matchedWord = found;
+    }
+    if (!matchedWord && standards?.ignore?.words) {
+      const found = standards.ignore.words.find(w => w.toLowerCase() === lowerToken);
+      if (found) matchedWord = found;
+    }
+    if (!matchedWord && COMMON_ABBREVIATIONS.has(lowerToken)) {
+      matchedWord = COMMON_ABBREVIATIONS.get(lowerToken)!;
+    }
+
+    if (matchedWord) {
+      tokens[idx] = matchedWord;
+    } else if (idx === firstWordIndex || idx === lastWordIndex) {
+      tokens[idx] = token.charAt(0).toUpperCase() + token.slice(1);
+    } else if (TRANSITION_WORDS.has(lowerToken)) {
+      tokens[idx] = lowerToken;
+    } else {
+      tokens[idx] = token.charAt(0).toUpperCase() + token.slice(1);
+    }
+  }
+
+  return tokens.join('');
+}
+
+function renameNodeInExpressions(modifiedJson: any, oldName: string, newName: string): number {
+  let count = 0;
+  const escapedOld = oldName.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const mcpPattern = new RegExp(`\\$\\(\\s*(['"\`])${escapedOld}\\1\\s*\\)`, 'g');
+  const nodePattern = new RegExp(`\\$node\\[\\s*(['"])${escapedOld}\\1\\s*\\]`, 'g');
+
+  function updateString(val: string): string {
+    if (!val.includes('{{') || !val.includes('}}')) {
+      return val;
+    }
+
+    let updated = val;
+
+    updated = updated.replace(mcpPattern, (match, quote) => {
+      count++;
+      output.warn(`[EXPRESSION-UPDATE] Updated reference to node "${oldName}" -> "${newName}" in expression: ${match}`);
+      return `\$(${quote}${newName}${quote})`;
+    });
+
+    updated = updated.replace(nodePattern, (match, quote) => {
+      count++;
+      output.warn(`[EXPRESSION-UPDATE] Updated reference to node "${oldName}" -> "${newName}" in expression: ${match}`);
+      return `\$node\[${quote}${newName}${quote}\]`;
+    });
+
+    return updated;
+  }
+
+  function recurse(obj: any) {
+    if (!obj || typeof obj !== 'object') return;
+
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (typeof val === 'string') {
+        obj[key] = updateString(val);
+      } else if (typeof val === 'object') {
+        recurse(val);
+      }
+    }
+  }
+
+  if (modifiedJson.nodes) {
+    for (const node of modifiedJson.nodes) {
+      if (node.parameters) {
+        recurse(node.parameters);
+      }
+    }
+  }
+
+  return count;
+}
+
+export function validateWorkflowAgainstStandards(
+  workflowJson: any,
+  standards: StandardsConfig,
+  relativePath: string
+): { errors: string[]; warnings: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  
+  const ignore = standards.ignore || {};
+  const workflowId = workflowJson.id ? String(workflowJson.id) : '';
+  const normalizedPath = relativePath.replace(/\\/g, '/');
+  
+  // 1. Check workflow ignores
+  if (isIgnored(workflowId, ignore.workflows) || isIgnored(normalizedPath, ignore.workflows)) {
+    return { errors: [], warnings: [] };
+  }
+  
+  // 2. Folder checks (segment by segment)
+  const folderParts = path.dirname(normalizedPath).split('/').filter(p => p && p !== '.' && p !== 'workflows' && p !== 'n8n');
+  const folderRegex = standards.folders?.naming?.regex ? new RegExp(standards.folders.naming.regex) : null;
+  const folderErrMessage = standards.folders?.naming?.errorMessage || (standards.folders?.naming?.regex ? `Folder name does not match regex: ${standards.folders.naming.regex}` : '');
+  
+  for (const folderPart of folderParts) {
+    if (isIgnored(folderPart, ignore.folders)) {
+      continue;
+    }
+    if (folderRegex && !folderRegex.test(folderPart)) {
+      errors.push(`Folder name "${folderPart}" violates naming standards. ${folderErrMessage}`);
+    }
+    const titleCased = toSmartTitleCase(folderPart, standards);
+    if (folderPart !== titleCased) {
+      errors.push(`Folder name "${folderPart}" is not in Title Case. Expected "${titleCased}".`);
+    }
+  }
+  
+  // 3. Workflow name checks
+  const workflowName = workflowJson.name || path.basename(normalizedPath, '.workflow.ts');
+  if (standards.workflows?.naming?.regex) {
+    const wfRegex = new RegExp(standards.workflows.naming.regex);
+    const errMessage = standards.workflows.naming.errorMessage || `Workflow name does not match regex: ${standards.workflows.naming.regex}`;
+    if (!wfRegex.test(workflowName)) {
+      errors.push(`Workflow name "${workflowName}" violates naming standards. ${errMessage}`);
+    }
+  }
+  const titleCasedWf = toSmartTitleCase(workflowName, standards);
+  if (workflowName !== titleCasedWf) {
+    errors.push(`Workflow name "${workflowName}" is not in Title Case. Expected "${titleCasedWf}".`);
+  }
+
+  // Check default or banned workflow names
+  const workflowNameLower = workflowName.toLowerCase().trim();
+  const defaultBanned = ['my workflow', 'new workflow', 'workflow', 'untitled workflow'];
+  const userBanned = standards.workflows?.bannedNames || [];
+  const allBanned = [...defaultBanned, ...userBanned].map(b => b.toLowerCase().trim());
+  const isBannedWf = allBanned.some(b => {
+    if (b === workflowNameLower) return true;
+    const escapedB = b.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^${escapedB}\\s*\\d*$`, 'i');
+    return regex.test(workflowNameLower);
+  });
+  if (isBannedWf) {
+    errors.push(`Workflow name "${workflowName}" is using a banned default name (e.g., "My workflow").`);
+  }
+  
+  // Workflow Description Note Check
+  if (standards.workflows?.requireDescription) {
+    const desc = workflowJson.description || workflowJson.settings?.description;
+    if (!desc || desc.trim() === '') {
+      errors.push(`Workflow is missing a description.`);
+    }
+  }
+  
+  // Workflow Tags Check
+  if (standards.workflows?.requireTags) {
+    const tags = workflowJson.tags || [];
+    const minTags = standards.workflows.minTags || 1;
+    if (tags.length < minTags) {
+      errors.push(`Workflow must have at least ${minTags} tag(s), but has ${tags.length}.`);
+    }
+  }
+  
+  const allowedWords = standards.language?.allowedWords || [];
+  const ignoredWords = standards.ignore?.words || [];
+  
+  // Workflow Description Language Check
+  if (standards.language?.enabled) {
+    const checkFields = standards.language.checkFields || [];
+    const desc = workflowJson.description || workflowJson.settings?.description;
+    if (checkFields.includes('workflow.description') && desc) {
+      const spellResult = checkSentenceSpelling(desc, allowedWords, ignoredWords);
+      if (!spellResult.ok) {
+        errors.push(`Workflow description contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+      }
+    }
+  }
+  
+  // 4. Node Checks
+  const nodes = workflowJson.nodes || [];
+  
+  for (const node of nodes) {
+    const nodeId = node.id ? String(node.id) : '';
+    const nodeName = node.name || '';
+    const nodeType = node.type || '';
+    
+    // Check if node is ignored
+    if (isIgnored(nodeId, ignore.nodes) || isIgnored(nodeName, ignore.nodes) || isIgnored(nodeType, ignore.nodes)) {
+      continue;
+    }
+
+    // Sticky Note Validation
+    if (nodeType === 'n8n-nodes-base.stickyNote') {
+      const stickyOpts = standards.nodes?.stickyNotes || {};
+      if (stickyOpts.ignore === true) {
+        continue;
+      }
+      
+      const content = node.parameters?.content || '';
+      
+      // 1. Markdown validation
+      if (stickyOpts.markdownValidation !== false && content) {
+        const mdErrors = validateMarkdown(content);
+        for (const mdErr of mdErrors) {
+          errors.push(`Sticky Note "${nodeName}" markdown error: ${mdErr}`);
+        }
+      }
+      
+      // 2. Color check
+      if (stickyOpts.colors) {
+        const nodeColor = node.parameters?.color;
+        const validColors = Object.values(stickyOpts.colors).filter(c => c !== undefined) as number[];
+        if (nodeColor !== undefined && validColors.length > 0 && !validColors.includes(nodeColor)) {
+          errors.push(`Sticky Note "${nodeName}" is using color ${nodeColor}, which is not in the approved colors: ${JSON.stringify(stickyOpts.colors)}.`);
+        }
+      }
+      
+      // Spelling check on content if enabled
+      if (standards.language?.enabled && standards.language.checkFields?.includes('node.notes') && content) {
+        const spellResult = checkSentenceSpelling(content, allowedWords, ignoredWords);
+        if (!spellResult.ok) {
+          errors.push(`Sticky Note "${nodeName}" content contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+        }
+      }
+      
+      continue;
+    }
+    
+    // Tolerate Default Node Names heuristic
+    const typeParts = nodeType.split('.');
+    const typeBase = typeParts[typeParts.length - 1] || '';
+    const defaultDisplay = typeBase
+      .replace(/([A-Z])/g, ' $1')
+      .replace(/^./, str => str.toUpperCase())
+      .trim();
+    
+    const isDefaultName = (nodeName.toLowerCase() === defaultDisplay.toLowerCase() || nodeName.toLowerCase() === typeBase.toLowerCase());
+    
+    if (isDefaultName && standards.nodes?.naming?.tolerateDefaultNames === false) {
+      errors.push(`Node "${nodeName}" is using the default name for node type "${nodeType}". Default names are banned.`);
+    }
+    
+    // Enforce node naming regex
+    if (!isDefaultName) {
+      if (standards.nodes?.naming?.regex) {
+        const nodeRegex = new RegExp(standards.nodes.naming.regex);
+        const errMessage = standards.nodes.naming.errorMessage || `Node name does not match regex: ${standards.nodes.naming.regex}`;
+        if (!nodeRegex.test(nodeName)) {
+          errors.push(`Node name "${nodeName}" violates naming standards. ${errMessage}`);
+        }
+      }
+      const titleCasedNode = toSmartTitleCase(nodeName, standards);
+      if (nodeName !== titleCasedNode) {
+        errors.push(`Node name "${nodeName}" is not in Title Case. Expected "${titleCasedNode}".`);
+      }
+    }
+    
+    // Duplicate Suffix Check (e.g. Node1 vs Node (1))
+    if (standards.nodes?.naming?.duplicateSuffixFormat) {
+      const format = standards.nodes.naming.duplicateSuffixFormat;
+      const parenMatch = nodeName.match(/^(.+)\s\((\d+)\)$/);
+      const simpleMatch = nodeName.match(/^(.+?)(\d+)$/);
+      
+      if (format === 'parenthesis') {
+        if (simpleMatch && !parenMatch) {
+          errors.push(`Node "${nodeName}" has duplicate naming violation. Expected parenthesis format (e.g., "${simpleMatch[1]} (${simpleMatch[2]})") but got "${nodeName}".`);
+        }
+      } else if (format === 'simple') {
+        if (parenMatch && !simpleMatch) {
+          errors.push(`Node "${nodeName}" has duplicate naming violation. Expected simple numbering format (e.g., "${parenMatch[1]}${parenMatch[2]}") but got "${nodeName}".`);
+        }
+      }
+    }
+    
+    // Notes Check
+    const hasNote = node.notesInFlow === true && typeof node.notes === 'string' && node.notes.trim() !== '';
+    const requireNotes = standards.nodes?.notes?.requireNotes;
+    const requireNotesForTypes = standards.nodes?.notes?.requireNotesForTypes || [];
+    
+    if (requireNotes || requireNotesForTypes.includes(nodeType)) {
+      if (!hasNote) {
+        const errMessage = standards.nodes.notes?.errorMessage || `Notes are required for node: ${nodeName}`;
+        errors.push(`Node "${nodeName}" is missing a description note. ${errMessage}`);
+      }
+    }
+    
+    // Language check on Node Name and Notes
+    if (standards.language?.enabled) {
+      const checkFields = standards.language.checkFields || [];
+      
+      // Node Name Spelling Check
+      if (checkFields.includes('node.name') && !isDefaultName) {
+        const words = splitIdentifierIntoWords(nodeName);
+        const invalidWords: string[] = [];
+        for (const w of words) {
+          if (!isWordEnglish(w, allowedWords, ignoredWords)) {
+            invalidWords.push(w);
+          }
+        }
+        if (invalidWords.length > 0) {
+          errors.push(`Node name "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}`);
+        }
+      }
+      
+      // Node Notes Spelling Check
+      if (checkFields.includes('node.notes') && hasNote && node.notes) {
+        const spellResult = checkSentenceSpelling(node.notes, allowedWords, ignoredWords);
+        if (!spellResult.ok) {
+          errors.push(`Node "${nodeName}" notes contain spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+        }
+      }
+    }
+    
+    // Variable checks (for Set and Edit Fields nodes)
+    const isSetNode = nodeType.startsWith('n8n-nodes-base.set') || nodeType === 'n8n-nodes-base.editFields';
+    if (isSetNode && node.parameters) {
+      const vars = extractVariableNames(node.parameters);
+      const convention = standards.variables?.naming?.convention;
+      const casingErrMessage = standards.variables?.naming?.errorMessage || `Variables must match convention: ${convention}`;
+      
+      for (const varName of vars) {
+        if (isIgnored(varName, ignore.variables)) {
+          continue;
+        }
+        
+        // Casing Check
+        if (convention && !checkCasing(varName, convention)) {
+          errors.push(`Variable "${varName}" in node "${nodeName}" violates casing convention. ${casingErrMessage}`);
+        }
+        
+        // Language Check on Variable Names
+        if (standards.language?.enabled && standards.language.checkFields?.includes('variable.name')) {
+          const words = splitIdentifierIntoWords(varName);
+          const invalidWords: string[] = [];
+          for (const w of words) {
+            if (!isWordEnglish(w, allowedWords, ignoredWords)) {
+              invalidWords.push(w);
+            }
+          }
+          if (invalidWords.length > 0) {
+            errors.push(`Variable "${varName}" in node "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}`);
+          }
+        }
+      }
+    }
+  }
+  
+  return { errors, warnings };
+}
+
+function renameNodeInConnections(connections: any, oldName: string, newName: string): any {
+  if (!connections || typeof connections !== 'object') return connections;
+  
+  const updatedConnections: any = {};
+  
+  for (const sourceNode of Object.keys(connections)) {
+    const sourceKey = sourceNode === oldName ? newName : sourceNode;
+    const outputs = connections[sourceNode];
+    
+    if (outputs && typeof outputs === 'object') {
+      const updatedOutputs: any = {};
+      for (const outputType of Object.keys(outputs)) {
+        const targets = outputs[outputType];
+        if (Array.isArray(targets)) {
+          updatedOutputs[outputType] = targets.map((targetGroup: any) => {
+            if (Array.isArray(targetGroup)) {
+              return targetGroup.map((target: any) => {
+                if (target && typeof target === 'object' && target.node === oldName) {
+                  return { ...target, node: newName };
+                }
+                return target;
+              });
+            }
+            return targetGroup;
+          });
+        } else {
+          updatedOutputs[outputType] = targets;
+        }
+      }
+      updatedConnections[sourceKey] = updatedOutputs;
+    } else {
+      updatedConnections[sourceKey] = outputs;
+    }
+  }
+  
+  return updatedConnections;
+}
+
+export function fixWorkflowAgainstStandards(
+  workflowJson: any,
+  standards: StandardsConfig
+): { modifiedJson: any; fixedCount: number } {
+  let fixedCount = 0;
+  const modifiedJson = JSON.parse(JSON.stringify(workflowJson));
+  const nodes = modifiedJson.nodes || [];
+  const format = standards.nodes?.naming?.duplicateSuffixFormat;
+  const ignore = standards.ignore || {};
+
+  // Fix workflow name casing if present
+  if (modifiedJson.name) {
+    const oldWfName = modifiedJson.name;
+    const newWfName = toSmartTitleCase(oldWfName, standards);
+    if (newWfName !== oldWfName) {
+      modifiedJson.name = newWfName;
+      fixedCount++;
+    }
+  }
+  
+  if (nodes.length > 0) {
+    for (const node of nodes) {
+      const nodeId = node.id ? String(node.id) : '';
+      const oldName = node.name || '';
+      const nodeType = node.type || '';
+      
+      // Determine if default node name (which is tolerated if tolerateDefaultNames is true)
+      const typeParts = nodeType.split('.');
+      const typeBase = typeParts[typeParts.length - 1] || '';
+      const defaultDisplay = typeBase
+        .replace(/([A-Z])/g, ' $1')
+        .replace(/^./, str => str.toUpperCase())
+        .trim();
+      const isDefaultName = (oldName.toLowerCase() === defaultDisplay.toLowerCase() || oldName.toLowerCase() === typeBase.toLowerCase());
+
+      if (isIgnored(nodeId, ignore.nodes) || isIgnored(oldName, ignore.nodes) || isIgnored(nodeType, ignore.nodes)) {
+        continue;
+      }
+      
+      let newName = oldName;
+      
+      // 1. Suffix formatting
+      if (format && !isDefaultName) {
+        const parenMatch = newName.match(/^(.+)\s\((\d+)\)$/);
+        const simpleMatch = newName.match(/^(.+?)(\d+)$/);
+        
+        if (format === 'parenthesis' && simpleMatch && !parenMatch) {
+          newName = `${simpleMatch[1]} (${simpleMatch[2]})`;
+        } else if (format === 'simple' && parenMatch && !simpleMatch) {
+          newName = `${parenMatch[1]}${parenMatch[2]}`;
+        }
+      }
+      
+      // 2. Title casing
+      if (!isDefaultName) {
+        newName = toSmartTitleCase(newName, standards);
+      }
+      
+      if (newName && newName !== oldName) {
+        node.name = newName;
+        // Fix connections
+        modifiedJson.connections = renameNodeInConnections(modifiedJson.connections, oldName, newName);
+        // Fix expression references in parameters
+        const exprFixed = renameNodeInExpressions(modifiedJson, oldName, newName);
+        fixedCount++;
+      }
+    }
+  }
+  
+  return { modifiedJson, fixedCount };
+}
