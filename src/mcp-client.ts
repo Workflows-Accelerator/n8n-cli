@@ -108,7 +108,8 @@ export class McpClient {
     });
 
     if (result.isError) {
-      const text = result.content
+      const content = result.content as any;
+      const text = content
         ?.filter((c: any) => c.type === 'text')
         .map((c: any) => c.text)
         .join('\n');

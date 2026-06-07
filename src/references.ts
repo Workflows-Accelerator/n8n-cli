@@ -129,7 +129,7 @@ export async function pullReferences(
         if (!description) {
           // Fallback to searching the generated TS code or using a placeholder
           try {
-            const parsed = parseWorkflowCode(tsCode);
+            const parsed = parseWorkflowCode(tsCode) as any;
             description = parsed.description || '';
           } catch (e) {
             // ignore

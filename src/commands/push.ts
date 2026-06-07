@@ -106,7 +106,7 @@ export function pushCommand(program: Command) {
             const validation = builder.validate();
             const workflowJson = builder.toJSON();
             localNames[relPath] = workflowJson.name || path.basename(relPath, '.workflow.ts');
-            localIds[relPath] = workflowJson.id;
+            localIds[relPath] = workflowJson.id || '';
 
             if (validation.errors.length > 0) {
               output.error(`Validation failed for local file '${relPath}':`);

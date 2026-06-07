@@ -106,7 +106,7 @@ async function temporarilyEnableMcp(
     let isInScope = false;
     if (isKnownScope) {
       wFolderId = wFolderId || null;
-      isInScope = !folderId || (wFolderId === folderId) || (wFolderId && folderPaths[wFolderId] !== undefined);
+      isInScope = !folderId || (wFolderId === folderId) || (wFolderId ? folderPaths[wFolderId] !== undefined : false);
     }
 
     if (isKnownScope) {
@@ -475,7 +475,7 @@ export function pullCommand(program: Command) {
                     localPath: relativePath,
                     contentHash: newHash,
                     remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                    folderId: wFolderId,
+                    folderId: wFolderId || undefined,
                   };
                   createdCount++;
                   output.log(`  [CREATED] ${relativePath}`);
@@ -489,7 +489,7 @@ export function pullCommand(program: Command) {
                     localPath: relativePath,
                     contentHash: newHash,
                     remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                    folderId: wFolderId,
+                    folderId: wFolderId || undefined,
                   };
                   unchangedCount++;
                 } else {
@@ -512,7 +512,7 @@ export function pullCommand(program: Command) {
                       localPath: relativePath,
                       contentHash: newHash,
                       remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                      folderId: wFolderId,
+                      folderId: wFolderId || undefined,
                     };
                     updatedCount++;
                     output.log(`  [UPDATED] ${relativePath}`);
