@@ -18,7 +18,8 @@ export function initCommand(program: Command) {
     .option('--folder-id <id>', 'n8n folder ID to sync with')
     .option('--ref-project-id <id>', 'n8n reference project ID')
     .option('--ref-folder-id <id>', 'n8n reference folder ID')
-    .option('--mcp-command <cmd>', 'MCP server start command', 'npx -y n8n-mcp')
+    .option('--ref-env <name>', 'environment name for reference workflows')
+    .option('--mcp-command <cmd>', 'MCP server start command')
     .option('--dir <path>', 'local directory for n8n files (defaults to n8n)', 'n8n')
     .action(async (options) => {
       const repoRoot = process.cwd();
@@ -134,8 +135,8 @@ export function initCommand(program: Command) {
             }
           }
 
-          // Resolve reference project names if IDs provided
-          if (options.refProjectId) {
+          // Resolve reference project names if IDs provided (using main mcp connection if same environment)
+          if (options.refProjectId && (!options.refEnv || options.refEnv === envName)) {
             const projects = await mcp.callToolAndGetJson('search_projects', {});
             const projList = Array.isArray(projects) ? projects : (projects.projects || projects.data || []);
             const matchedProj = projList.find((p: any) => p.id === options.refProjectId);
@@ -157,6 +158,45 @@ export function initCommand(program: Command) {
             }
           }
         });
+
+        // If an independent refEnv is specified and is different from envName
+        if (options.refProjectId && options.refEnv && options.refEnv !== envName) {
+          const refEnvConfig = globalConfig.environments?.[options.refEnv] || {};
+          const refMcpCommand = refEnvConfig.mcpCommand || globalConfig.mcpCommand || 'npx -y n8n-mcp';
+          const refAccessToken = refEnvConfig.accessToken || globalConfig.accessToken;
+
+          if (refAccessToken) {
+            output.log(`Verifying reference connection with independent environment '${options.refEnv}'...`);
+            try {
+              await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
+                const projects = await refMcp.callToolAndGetJson('search_projects', {});
+                const projList = Array.isArray(projects) ? projects : (projects.projects || projects.data || []);
+                const matchedProj = projList.find((p: any) => p.id === options.refProjectId);
+                if (matchedProj) {
+                  refProjectName = matchedProj.name;
+                } else {
+                  output.warn(`Could not find reference project with ID: ${options.refProjectId} in environment ${options.refEnv}.`);
+                }
+
+                if (options.refFolderId) {
+                  const folders = await refMcp.callToolAndGetJson('search_folders', { projectId: options.refProjectId });
+                  const folderList = Array.isArray(folders) ? folders : (folders.folders || folders.data || []);
+                  const matchedFolder = folderList.find((f: any) => f.id === options.refFolderId);
+                  if (matchedFolder) {
+                    refFolderName = matchedFolder.name;
+                  } else {
+                    output.warn(`Could not find reference folder with ID: ${options.refFolderId} in reference project ${options.refProjectId}.`);
+                  }
+                }
+              });
+            } catch (err) {
+              output.warn(`Could not verify connection to reference environment '${options.refEnv}' via MCP: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          } else {
+            output.warn(`Reference environment '${options.refEnv}' is not configured in global environments. Cannot verify reference project/folder.`);
+          }
+        }
+
         output.log('Successfully connected to n8n instance and validated settings.');
       } catch (err) {
         output.warn(`Could not verify connection via MCP: ${err instanceof Error ? err.message : String(err)}`);
@@ -180,6 +220,9 @@ export function initCommand(program: Command) {
           folderId: options.refFolderId,
           folderName: refFolderName,
         };
+        if (options.refEnv) {
+          config.references.env = options.refEnv;
+        }
       }
 
       saveConfig(repoRoot, config);

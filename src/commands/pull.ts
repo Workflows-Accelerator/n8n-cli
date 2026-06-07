@@ -138,6 +138,7 @@ export function pullCommand(program: Command) {
     .option('--force', 'overwrite local modifications without confirmation', false)
     .option('--hard', 'delete untracked and out-of-scope local workflows to mirror remote state exactly', false)
     .option('--skip-references', 'skip pulling reference workflows', false)
+    .option('--ref-env <name>', 'override environment for reference workflows')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .option('--api-key <key>', 'override n8n REST API key')
@@ -170,6 +171,50 @@ export function pullCommand(program: Command) {
 
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
+        }
+
+        let envKey = options.env;
+        if (!envKey) {
+          const envArgIndex = process.argv.indexOf('--env');
+          if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+            envKey = process.argv[envArgIndex + 1];
+          } else {
+            const envArg = process.argv.find(arg => arg.startsWith('--env='));
+            if (envArg) {
+              envKey = envArg.split('=')[1];
+            }
+          }
+        }
+        if (!envKey) {
+          envKey = config?.env || config?.environmentName || 'development';
+        }
+
+        const refEnv = options.refEnv || config?.references?.env;
+        const isIndependentRefEnv = refEnv && refEnv !== envKey;
+
+        let refMcpCommand = mcpCommand;
+        let refAccessToken = accessToken;
+        let refApiKey = apiKey;
+        let refInstanceUrl = instanceUrl;
+
+        if (isIndependentRefEnv) {
+          const globalConfig = loadGlobalConfig();
+          const refEnvConfig = globalConfig.environments?.[refEnv] || {};
+          refMcpCommand = refEnvConfig.mcpCommand || globalConfig.mcpCommand || 'npx -y n8n-mcp';
+          refAccessToken = refEnvConfig.accessToken || globalConfig.accessToken || '';
+          refApiKey = refEnvConfig.apiKey || globalConfig.apiKey || '';
+          refInstanceUrl = refEnvConfig.instanceUrl || globalConfig.instanceUrl || '';
+
+          if (!refAccessToken) {
+            throw new Error(
+              `n8n access token is required for reference environment '${refEnv}'. Set N8N_ACCESS_TOKEN in your environment or global config environments.${refEnv}.accessToken.`
+            );
+          }
+          if (!refInstanceUrl) {
+            throw new Error(
+              `n8n instance URL is required for reference environment '${refEnv}'. Set N8N_INSTANCE_URL in your environment or global config environments.${refEnv}.instanceUrl.`
+            );
+          }
         }
 
         convertLocalJsonWorkflows(path.join(repoRoot, localDir, 'workflows'));
@@ -228,11 +273,13 @@ export function pullCommand(program: Command) {
             // 1. Temporarily enable MCP for the main project
             mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId);
 
-            // 2. Temporarily enable MCP for the reference project if it is configured and different
-            if (refProjId && refProjId !== projectId) {
-              refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId);
-            } else if (refProjId === projectId) {
-              refMcpCache = mainMcpCache;
+            // 2. Temporarily enable MCP for the reference project if it is configured, in the same environment, and different
+            if (refProjId && !isIndependentRefEnv) {
+              if (refProjId !== projectId) {
+                refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId);
+              } else {
+                refMcpCache = mainMcpCache;
+              }
             }
 
             // Fetch folders to build path hierarchy and pre-create directories
@@ -502,8 +549,8 @@ export function pullCommand(program: Command) {
             syncState.folders = Object.keys(folderPaths);
             saveSyncState(repoRoot!, syncState, localDir);
 
-            // Pull references
-            if (!options.skipReferences) {
+            // Pull references (same environment case)
+            if (!options.skipReferences && refProjId && !isIndependentRefEnv) {
               await pullReferences(mcp, config, repoRoot!, folderCache, instanceUrl, apiKey);
             }
           } finally {
@@ -513,7 +560,7 @@ export function pullCommand(program: Command) {
             } catch (err) {
               output.error(`Failed to restore main project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
             }
-            if (refProjId && refProjId !== projectId) {
+            if (refProjId && !isIndependentRefEnv && refProjId !== projectId) {
               try {
                 let refFolderPaths: Record<string, string> = {};
                 try {
@@ -528,6 +575,32 @@ export function pullCommand(program: Command) {
                 output.error(`Failed to restore references project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
               }
             }
+          }
+
+          // Pull references (independent environment case)
+          if (!options.skipReferences && refProjId && isIndependentRefEnv) {
+            output.log(`Connecting to reference environment '${refEnv}' to pull reference workflows...`);
+            await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
+              let refFolderPaths: Record<string, string> = {};
+              try {
+                refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId);
+                await pullReferences(refMcp, config, repoRoot!, folderCache, refInstanceUrl, refApiKey);
+              } finally {
+                output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
+                try {
+                  const foldersResponse = await refMcp.callToolAndGetJson('search_folders', { projectId: refProjId });
+                  const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+                  refFolderPaths = buildFolderPaths(folders, refFolderId);
+                } catch (e) {
+                  // ignore
+                }
+                try {
+                  await restoreMcpSettings(refMcp, refInstanceUrl, refApiKey, refProjId, refMcpCache, refFolderId, refFolderPaths);
+                } catch (err) {
+                  output.error(`Failed to restore references project MCP settings on environment '${refEnv}': ${err instanceof Error ? err.message : String(err)}`);
+                }
+              }
+            });
           }
         });
 

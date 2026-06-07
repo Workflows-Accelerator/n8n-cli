@@ -15,6 +15,7 @@ export interface N8nCliConfig {
   folderName?: string;
   localDir?: string;
   references?: {
+    env?: string;
     projectId: string;
     projectName: string;
     folderId?: string;
