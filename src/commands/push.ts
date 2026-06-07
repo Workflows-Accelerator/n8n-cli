@@ -211,7 +211,7 @@ export function pushCommand(program: Command) {
             const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
             pgClient = new ClientClass({
               connectionString: dbUrl,
-              ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+              ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
             });
             await pgClient.connect();
             

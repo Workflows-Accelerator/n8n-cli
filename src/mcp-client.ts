@@ -32,8 +32,30 @@ export class McpClient {
       instanceUrl = commandStr;
     } else {
       try {
+        const repoRoot = findRepoRoot();
         const globalConfig = loadGlobalConfig();
-        instanceUrl = globalConfig.instanceUrl;
+        
+        let envKey = 'development';
+        if (repoRoot) {
+          try {
+            const config = loadConfig(repoRoot);
+            envKey = config.env || config.environmentName || 'development';
+          } catch (e) {
+            // Ignore
+          }
+        } else {
+          const envArgIndex = process.argv.indexOf('--env');
+          if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+            envKey = process.argv[envArgIndex + 1];
+          } else {
+            const envArg = process.argv.find(arg => arg.startsWith('--env='));
+            if (envArg) {
+              envKey = envArg.split('=')[1];
+            }
+          }
+        }
+        
+        instanceUrl = globalConfig.environments?.[envKey]?.instanceUrl || globalConfig.instanceUrl;
       } catch (err) {
         // Ignore
       }

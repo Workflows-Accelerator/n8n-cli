@@ -32,16 +32,11 @@ Stores project-specific, non-sensitive IDs and environment selectors.
 Allows storing multiple environments at the instance level (e.g. for different client instances). When the local configuration specifies `"env": "PARRIS"`, parameters are resolved from the corresponding global environment.
 ```json
 {
-  "dbUrl": "postgres://user:pass@host:port/db?sslmode=require",
-  "accessToken": "mcp-access-token",
-  "apiKey": "n8n-rest-api-key",
-  "instanceUrl": "https://n8n.parris.app",
-  "mcpCommand": "npx -y n8n-mcp",
   "environments": {
     "PARRIS": {
       "instanceUrl": "https://n8n.parris.app",
       "mcpCommand": "npx -y n8n-mcp",
-      "dbUrl": "postgres://user:pass@host:port/db?sslmode=require",
+      "dbUrl": "postgres://user:pass@host:port/db?sslmode=verify-full",
       "accessToken": "mcp-access-token",
       "apiKey": "n8n-rest-api-key"
     }

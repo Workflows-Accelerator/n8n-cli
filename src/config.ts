@@ -437,7 +437,7 @@ export async function fetchWorkflowsWithDb(dbUrl: string): Promise<any[] | null>
   const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;
   const client = new ClientClass({
     connectionString: dbUrl,
-    ssl: dbUrl.includes('localhost') ? false : { rejectUnauthorized: false }
+    ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
   });
 
   try {
