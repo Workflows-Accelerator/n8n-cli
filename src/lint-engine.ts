@@ -77,6 +77,14 @@ export interface StandardsConfig {
     variables?: string[];
     words?: string[];
   };
+  ignoreRules?: {
+    nodes?: {
+      titleCase?: string[];
+      namingRegex?: string[];
+      duplicateSuffix?: string[];
+      notes?: string[];
+    };
+  };
 }
 
 export const DEFAULT_STANDARDS: StandardsConfig = {
@@ -309,7 +317,7 @@ function isPatternMatched(target: string, pattern: string): boolean {
   }
 }
 
-function isIgnored(target: string, ignoreList: string[] | undefined): boolean {
+export function isIgnored(target: string, ignoreList: string[] | undefined): boolean {
   if (!target || !ignoreList || ignoreList.length === 0) return false;
   return ignoreList.some(pattern => isPatternMatched(target, pattern));
 }
@@ -500,6 +508,13 @@ export function validateWorkflowAgainstStandards(
   
   // 2. Folder checks (segment by segment)
   const folderParts = path.dirname(normalizedPath).split('/').filter(p => p && p !== '.' && p !== 'workflows' && p !== 'n8n');
+  
+  // Exclude entire folder from any validation of child elements if ignored
+  const isParentFolderIgnored = folderParts.some(folderPart => isIgnored(folderPart, ignore.folders));
+  if (isParentFolderIgnored) {
+    return { errors: [], warnings: [] };
+  }
+
   const folderRegex = standards.folders?.naming?.regex ? new RegExp(standards.folders.naming.regex) : null;
   const folderErrMessage = standards.folders?.naming?.errorMessage || (standards.folders?.naming?.regex ? `Folder name does not match regex: ${standards.folders.naming.regex}` : '');
   
@@ -643,21 +658,34 @@ export function validateWorkflowAgainstStandards(
     
     // Enforce node naming regex
     if (!isDefaultName) {
-      if (standards.nodes?.naming?.regex) {
+      const isNamingRegexIgnored = isIgnored(nodeType, standards.ignoreRules?.nodes?.namingRegex) || isIgnored(nodeName, standards.ignoreRules?.nodes?.namingRegex);
+      if (!isNamingRegexIgnored && standards.nodes?.naming?.regex) {
         const nodeRegex = new RegExp(standards.nodes.naming.regex);
         const errMessage = standards.nodes.naming.errorMessage || `Node name does not match regex: ${standards.nodes.naming.regex}`;
         if (!nodeRegex.test(nodeName)) {
           errors.push(`Node name "${nodeName}" violates naming standards. ${errMessage}`);
         }
       }
-      const titleCasedNode = toSmartTitleCase(nodeName, standards);
-      if (nodeName !== titleCasedNode) {
-        errors.push(`Node name "${nodeName}" is not in Title Case. Expected "${titleCasedNode}".`);
+      
+      const isWebhookNode = nodeType === 'n8n-nodes-base.webhook';
+      const isTitleCaseIgnored = isIgnored(nodeType, standards.ignoreRules?.nodes?.titleCase) || isIgnored(nodeName, standards.ignoreRules?.nodes?.titleCase);
+      
+      if (isWebhookNode) {
+        const webhookPattern = /^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\s+\/[a-zA-Z0-9\-_\/\{\}:]*$/;
+        if (!webhookPattern.test(nodeName)) {
+          errors.push(`Webhook trigger node name "${nodeName}" must follow the convention "[METHOD] /[endpoint]" (e.g., "POST /users").`);
+        }
+      } else if (!isTitleCaseIgnored) {
+        const titleCasedNode = toSmartTitleCase(nodeName, standards);
+        if (nodeName !== titleCasedNode) {
+          errors.push(`Node name "${nodeName}" is not in Title Case. Expected "${titleCasedNode}".`);
+        }
       }
     }
     
     // Duplicate Suffix Check (e.g. Node1 vs Node (1))
-    if (standards.nodes?.naming?.duplicateSuffixFormat) {
+    const isDuplicateSuffixIgnored = isIgnored(nodeType, standards.ignoreRules?.nodes?.duplicateSuffix) || isIgnored(nodeName, standards.ignoreRules?.nodes?.duplicateSuffix);
+    if (!isDuplicateSuffixIgnored && standards.nodes?.naming?.duplicateSuffixFormat) {
       const format = standards.nodes.naming.duplicateSuffixFormat;
       const parenMatch = nodeName.match(/^(.+)\s\((\d+)\)$/);
       const simpleMatch = nodeName.match(/^(.+?)(\d+)$/);
@@ -675,13 +703,16 @@ export function validateWorkflowAgainstStandards(
     
     // Notes Check
     const hasNote = node.notesInFlow === true && typeof node.notes === 'string' && node.notes.trim() !== '';
-    const requireNotes = standards.nodes?.notes?.requireNotes;
-    const requireNotesForTypes = standards.nodes?.notes?.requireNotesForTypes || [];
-    
-    if (requireNotes || requireNotesForTypes.includes(nodeType)) {
-      if (!hasNote) {
-        const errMessage = standards.nodes.notes?.errorMessage || `Notes are required for node: ${nodeName}`;
-        errors.push(`Node "${nodeName}" is missing a description note. ${errMessage}`);
+    const isNotesIgnored = isIgnored(nodeType, standards.ignoreRules?.nodes?.notes) || isIgnored(nodeName, standards.ignoreRules?.nodes?.notes);
+    if (!isNotesIgnored) {
+      const requireNotes = standards.nodes?.notes?.requireNotes;
+      const requireNotesForTypes = standards.nodes?.notes?.requireNotesForTypes || [];
+      
+      if (requireNotes || requireNotesForTypes.includes(nodeType)) {
+        if (!hasNote) {
+          const errMessage = standards.nodes.notes?.errorMessage || `Notes are required for node: ${nodeName}`;
+          errors.push(`Node "${nodeName}" is missing a description note. ${errMessage}`);
+        }
       }
     }
     
@@ -857,4 +888,152 @@ export function fixWorkflowAgainstStandards(
   }
   
   return { modifiedJson, fixedCount };
+}
+
+export function validateStandardsJson(content: string): string[] {
+  const errors: string[] = [];
+  let json: any = null;
+
+  try {
+    json = JSON.parse(content);
+  } catch (err) {
+    errors.push(`Invalid JSON syntax: ${err instanceof Error ? err.message : String(err)}`);
+    return errors;
+  }
+
+  if (typeof json !== 'object' || json === null || Array.isArray(json)) {
+    errors.push('Standards configuration must be a JSON object.');
+    return errors;
+  }
+
+  const checkType = (path: string, val: any, expectedType: 'string' | 'boolean' | 'number' | 'array' | 'object') => {
+    if (val === undefined) return;
+    if (expectedType === 'array') {
+      if (!Array.isArray(val)) {
+        errors.push(`"${path}" must be an array.`);
+      }
+    } else if (expectedType === 'object') {
+      if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+        errors.push(`"${path}" must be an object.`);
+      }
+    } else {
+      if (typeof val !== expectedType) {
+        errors.push(`"${path}" must be a ${expectedType}.`);
+      }
+    }
+  };
+
+  const validateRegex = (path: string, pattern: any) => {
+    if (pattern === undefined) return;
+    if (typeof pattern !== 'string') {
+      errors.push(`"${path}" must be a string regular expression.`);
+      return;
+    }
+    try {
+      new RegExp(pattern);
+    } catch (e) {
+      errors.push(`"${path}" has invalid regular expression pattern: ${pattern}. Error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // 1. Folders
+  checkType('folders', json.folders, 'object');
+  if (json.folders) {
+    checkType('folders.naming', json.folders.naming, 'object');
+    if (json.folders.naming) {
+      validateRegex('folders.naming.regex', json.folders.naming.regex);
+      checkType('folders.naming.errorMessage', json.folders.naming.errorMessage, 'string');
+    }
+  }
+
+  // 2. Workflows
+  checkType('workflows', json.workflows, 'object');
+  if (json.workflows) {
+    checkType('workflows.naming', json.workflows.naming, 'object');
+    if (json.workflows.naming) {
+      validateRegex('workflows.naming.regex', json.workflows.naming.regex);
+      checkType('workflows.naming.errorMessage', json.workflows.naming.errorMessage, 'string');
+    }
+    checkType('workflows.requireDescription', json.workflows.requireDescription, 'boolean');
+    checkType('workflows.requireTags', json.workflows.requireTags, 'boolean');
+    checkType('workflows.minTags', json.workflows.minTags, 'number');
+    checkType('workflows.bannedNames', json.workflows.bannedNames, 'array');
+  }
+
+  // 3. Nodes
+  checkType('nodes', json.nodes, 'object');
+  if (json.nodes) {
+    checkType('nodes.naming', json.nodes.naming, 'object');
+    if (json.nodes.naming) {
+      checkType('nodes.naming.tolerateDefaultNames', json.nodes.naming.tolerateDefaultNames, 'boolean');
+      if (json.nodes.naming.duplicateSuffixFormat !== undefined && 
+          json.nodes.naming.duplicateSuffixFormat !== 'parenthesis' && 
+          json.nodes.naming.duplicateSuffixFormat !== 'simple') {
+        errors.push('"nodes.naming.duplicateSuffixFormat" must be one of: "parenthesis", "simple".');
+      }
+      validateRegex('nodes.naming.regex', json.nodes.naming.regex);
+      checkType('nodes.naming.errorMessage', json.nodes.naming.errorMessage, 'string');
+    }
+    checkType('nodes.notes', json.nodes.notes, 'object');
+    if (json.nodes.notes) {
+      checkType('nodes.notes.requireNotes', json.nodes.notes.requireNotes, 'boolean');
+      checkType('nodes.notes.requireNotesForTypes', json.nodes.notes.requireNotesForTypes, 'array');
+      checkType('nodes.notes.errorMessage', json.nodes.notes.errorMessage, 'string');
+    }
+    checkType('nodes.stickyNotes', json.nodes.stickyNotes, 'object');
+    if (json.nodes.stickyNotes) {
+      checkType('nodes.stickyNotes.ignore', json.nodes.stickyNotes.ignore, 'boolean');
+      checkType('nodes.stickyNotes.markdownValidation', json.nodes.stickyNotes.markdownValidation, 'boolean');
+      checkType('nodes.stickyNotes.colors', json.nodes.stickyNotes.colors, 'object');
+    }
+  }
+
+  // 4. Variables
+  checkType('variables', json.variables, 'object');
+  if (json.variables) {
+    checkType('variables.naming', json.variables.naming, 'object');
+    if (json.variables.naming) {
+      if (json.variables.naming.convention !== undefined && 
+          json.variables.naming.convention !== 'camelCase' && 
+          json.variables.naming.convention !== 'PascalCase' && 
+          json.variables.naming.convention !== 'snake_case') {
+        errors.push('"variables.naming.convention" must be one of: "camelCase", "PascalCase", "snake_case".');
+      }
+      checkType('variables.naming.errorMessage', json.variables.naming.errorMessage, 'string');
+    }
+  }
+
+  // 5. Language
+  checkType('language', json.language, 'object');
+  if (json.language) {
+    checkType('language.enabled', json.language.enabled, 'boolean');
+    checkType('language.expected', json.language.expected, 'string');
+    checkType('language.checkFields', json.language.checkFields, 'array');
+    checkType('language.allowedWords', json.language.allowedWords, 'array');
+    checkType('language.errorMessage', json.language.errorMessage, 'string');
+  }
+
+  // 6. Ignore
+  checkType('ignore', json.ignore, 'object');
+  if (json.ignore) {
+    checkType('ignore.workflows', json.ignore.workflows, 'array');
+    checkType('ignore.folders', json.ignore.folders, 'array');
+    checkType('ignore.nodes', json.ignore.nodes, 'array');
+    checkType('ignore.variables', json.ignore.variables, 'array');
+    checkType('ignore.words', json.ignore.words, 'array');
+  }
+
+  // 7. IgnoreRules
+  checkType('ignoreRules', json.ignoreRules, 'object');
+  if (json.ignoreRules) {
+    checkType('ignoreRules.nodes', json.ignoreRules.nodes, 'object');
+    if (json.ignoreRules.nodes) {
+      checkType('ignoreRules.nodes.titleCase', json.ignoreRules.nodes.titleCase, 'array');
+      checkType('ignoreRules.nodes.namingRegex', json.ignoreRules.nodes.namingRegex, 'array');
+      checkType('ignoreRules.nodes.duplicateSuffix', json.ignoreRules.nodes.duplicateSuffix, 'array');
+      checkType('ignoreRules.nodes.notes', json.ignoreRules.nodes.notes, 'array');
+    }
+  }
+
+  return errors;
 }

@@ -6,7 +6,7 @@ import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertT
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
-import { loadStandards, validateWorkflowAgainstStandards } from '../lint-engine.js';
+import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
 
 function parseLatestVersions(text: string): Record<string, number> {
   const versions: Record<string, number> = {};
@@ -80,15 +80,31 @@ export function validateCommand(program: Command) {
           relativePath: string;
           builder?: any;
           parseError?: string;
+          isSkipped?: boolean;
+          skipReason?: string;
         }> = [];
 
         const uniqueNodeTypes = new Set<string>();
+        const standards = loadStandards(repoRoot);
 
         for (const file of filesToValidate) {
           const relativePath = path.relative(repoRoot, file).replace(/\\/g, '/');
           
           if (!fs.existsSync(file)) {
             parsedWorkflows.push({ file, relativePath, parseError: 'File does not exist' });
+            continue;
+          }
+
+          // Check if parent directory is ignored
+          const folderParts = path.dirname(relativePath).split('/').filter(p => p && p !== '.' && p !== 'workflows' && p !== 'n8n');
+          const isParentFolderIgnored = folderParts.some(folderPart => isIgnored(folderPart, standards.ignore?.folders));
+          if (isParentFolderIgnored) {
+            parsedWorkflows.push({
+              file,
+              relativePath,
+              isSkipped: true,
+              skipReason: 'folder ignored'
+            });
             continue;
           }
 
@@ -153,6 +169,23 @@ export function validateCommand(program: Command) {
         for (const pw of parsedWorkflows) {
           const relativePath = pw.relativePath;
 
+          if (pw.isSkipped) {
+            if (output.getJsonMode()) {
+              jsonResults.push({
+                file: relativePath,
+                exists: true,
+                success: true,
+                errors: [],
+                warnings: [],
+                skipped: true,
+                reason: pw.skipReason
+              });
+            } else {
+              output.log(`[VALID]   ${relativePath} (skipped: ${pw.skipReason})`);
+            }
+            continue;
+          }
+
           if (pw.parseError) {
             if (output.getJsonMode()) {
               jsonResults.push({
@@ -182,7 +215,6 @@ export function validateCommand(program: Command) {
 
           if (options.lint) {
             try {
-              const standards = loadStandards(repoRoot);
               const workflowJson = builder.toJSON();
               const lintRes = validateWorkflowAgainstStandards(workflowJson, standards, relativePath);
               errors.push(...lintRes.errors);

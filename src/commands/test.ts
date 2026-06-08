@@ -214,7 +214,7 @@ export function testCommand(program: Command) {
                 workflowId: runWfId,
               });
 
-              const nodeSchemas = schemas.nodeSchemas || schemas;
+              const nodeSchemas = schemas.nodeSchemasToGenerate || schemas.nodeSchemas || schemas;
 
               output.log('Auto-generating mock pin data from schemas...');
               for (const [nodeName, schema] of Object.entries(nodeSchemas)) {

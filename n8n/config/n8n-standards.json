@@ -18,8 +18,8 @@
     "naming": {
       "tolerateDefaultNames": true,
       "duplicateSuffixFormat": "parenthesis",
-      "regex": "^[A-Z][a-zA-Z0-9\\s()\\-:]*$",
-      "errorMessage": "Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, or colons."
+      "regex": "^[A-Z][a-zA-Z0-9\\s()\\-:\\/]*$",
+      "errorMessage": "Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, colons, or slashes."
     },
     "notes": {
       "requireNotes": false,
@@ -59,9 +59,22 @@
   },
   "ignore": {
     "workflows": [],
-    "folders": [],
+    "folders": ["Sandbox"],
     "nodes": [],
     "variables": [],
-    "words": ["ignoredword", "LinkText"]
+    "words": ["ignoredword", "LinkText", "Metadata", "RAG", "Supabase", "Gotenberg", "IMAP", "sub-workflows", "caseId", "sub-workflow", "defineBelow", "executeOnce", "high-level", "SaaS", "backend", "LangChain", "LLM", "pgvector", "itemIndex", "processedText", "itemId", "responseId", "embeddings", "PostgreSQL", "retrieval-augmented", "high-value", "low-value", "category-based", "re-converges"]
+  },
+  "ignoreRules": {
+    "nodes": {
+      "titleCase": [
+        "n8n-nodes-base.code",
+        "Set Category A Status"
+      ],
+      "namingRegex": [
+        "n8n-nodes-base.webhook"
+      ],
+      "duplicateSuffix": [],
+      "notes": []
+    }
   }
 }

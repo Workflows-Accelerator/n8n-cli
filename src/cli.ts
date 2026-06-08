@@ -18,6 +18,7 @@ import { sdkCommand } from './commands/sdk.js';
 import { environmentsCommand } from './commands/environments.js';
 import { importSkillCommand } from './commands/import-skill.js';
 import { lintCommand } from './commands/lint.js';
+import { standardsCommand } from './commands/standards.js';
 
 const program = new Command();
 
@@ -57,6 +58,7 @@ sdkCommand(program);
 environmentsCommand(program);
 importSkillCommand(program);
 lintCommand(program);
+standardsCommand(program);
 
 // Parse arguments asynchronously
 program.parseAsync(process.argv).catch(err => {

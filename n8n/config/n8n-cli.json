@@ -4,5 +4,11 @@
   "projectId": "5U5vIHIc1Ug5eVLK",
   "projectName": "Workflows Accelerator <n8n@workflows.ac>",
   "folderId": "3JiyzwujIPklu0w8",
-  "folderName": "AI Examples"
+  "folderName": "AI Examples",
+  "references": {
+    "projectId": "5U5vIHIc1Ug5eVLK",
+    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
+    "folderId": "wph53hSZpj5cTuba",
+    "folderName": "Discovery"
+  }
 }
