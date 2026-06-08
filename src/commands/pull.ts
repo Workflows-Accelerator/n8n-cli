@@ -64,6 +64,11 @@ async function enableMcpForWorkflow(
   const updatedSettings = { ...fullWf.settings, availableInMCP: enable };
   delete updatedSettings.binaryMode;
 
+  const updatedWf = {
+    ...fullWf,
+    settings: updatedSettings,
+  };
+
   if (apiKey && instanceUrl) {
     try {
       const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
@@ -73,9 +78,7 @@ async function enableMcpForWorkflow(
           'X-N8N-API-KEY': apiKey,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          settings: updatedSettings,
-        }),
+        body: JSON.stringify(updatedWf),
       });
 
       if (res.ok) {
@@ -86,11 +89,6 @@ async function enableMcpForWorkflow(
       output.warn(`REST API update for workflow '${w.name || w.id}' failed: ${apiErr instanceof Error ? apiErr.message : String(apiErr)}. Falling back to MCP...`);
     }
   }
-
-  const updatedWf = {
-    ...fullWf,
-    settings: updatedSettings,
-  };
 
   const tsCode = generateWorkflowCode(updatedWf);
 
