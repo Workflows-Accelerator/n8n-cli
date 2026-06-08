@@ -236,15 +236,58 @@ export function testCommand(program: Command) {
             const text = testResult.content?.find((c: any) => c.type === 'text')?.text;
             output.log(text || 'Test run succeeded.');
           } finally {
-            // 5. Cleanup Temporary Workflow
-            if (deployedTempWfId) {
-              output.log(`Cleaning up temporary workflow (${deployedTempWfId})...`);
+            // 5. Cleanup Temporary Workflow & Folder
+            if (dbUrl) {
+              const pgClient = pg as any;
+              const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;
+              const client = new ClientClass({
+                connectionString: dbUrl,
+                ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+              });
               try {
-                await mcp.callTool('archive_workflow', {
-                  workflowId: deployedTempWfId,
-                });
-              } catch (cleanupErr) {
-                output.error(`Failed to cleanup temporary workflow: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+                await client.connect();
+                if (deployedTempWfId) {
+                  output.log(`Deleting temporary execution data and workflow (${deployedTempWfId}) from DB...`);
+                  await client.query('DELETE FROM execution_entity WHERE "workflowId" = $1;', [deployedTempWfId]);
+                  await client.query('DELETE FROM shared_workflow WHERE "workflowId" = $1;', [deployedTempWfId]);
+                  await client.query('DELETE FROM workflow_dependency WHERE "workflowId" = $1;', [deployedTempWfId]);
+                  await client.query('DELETE FROM workflows_tags WHERE "workflowId" = $1;', [deployedTempWfId]);
+                  await client.query('DELETE FROM workflow_entity WHERE id = $1;', [deployedTempWfId]);
+                  output.log(`Successfully deleted temporary workflow from DB.`);
+                }
+                if (tempFolderId) {
+                  // Check if any other non-deleted workflows are in this folder
+                  const checkWfs = await client.query('SELECT id FROM workflow_entity WHERE "parentFolderId" = $1;', [tempFolderId]);
+                  if (checkWfs.rows.length === 0) {
+                    output.log(`Deleting temporary folder (${tempFolderId}) from DB...`);
+                    await client.query('DELETE FROM folder WHERE id = $1;', [tempFolderId]);
+                    output.log(`Successfully deleted temporary folder from DB.`);
+                  }
+                }
+              } catch (dbCleanupErr) {
+                output.debug(`DB cleanup failed: ${dbCleanupErr instanceof Error ? dbCleanupErr.message : String(dbCleanupErr)}. Falling back to MCP archiving.`);
+                if (deployedTempWfId) {
+                  try {
+                    await mcp.callTool('archive_workflow', {
+                      workflowId: deployedTempWfId,
+                    });
+                  } catch (cleanupErr) {
+                    output.error(`Failed to cleanup temporary workflow: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+                  }
+                }
+              } finally {
+                try { await client.end(); } catch (e) {}
+              }
+            } else {
+              if (deployedTempWfId) {
+                output.log(`Cleaning up temporary workflow (${deployedTempWfId})...`);
+                try {
+                  await mcp.callTool('archive_workflow', {
+                    workflowId: deployedTempWfId,
+                  });
+                } catch (cleanupErr) {
+                  output.error(`Failed to cleanup temporary workflow: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`);
+                }
               }
             }
           }

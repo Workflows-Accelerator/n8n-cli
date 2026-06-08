@@ -1,5 +1,5 @@
 {
-  "name": "n8ncli",
+  "name": "@workflows-accelerator/n8n-cli",
   "version": "1.0.0",
   "description": "AI-First n8n Workflow CLI",
   "type": "module",
@@ -10,7 +10,15 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsup",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Workflows-Accelerator/n8n-cli.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "keywords": [
     "n8n",
