@@ -6,7 +6,7 @@ An optimized TypeScript CLI tool that wraps n8n MCP server tools into fast, toke
 
 - **Workflow as Code:** Sync workflows as TypeScript files using the official `@n8n/workflow-sdk` builder format. Supports automatic conversion of local `.json` workflow files to `.workflow.ts`.
 - **Database-Backed Folder Synchronization**: Directly syncs folder structures to the remote PostgreSQL database on `push` (supporting creates, moves/renames, and deletions of empty folders), with retention safety rules on `pull`.
-- **Multi-Environment Management**: Configures and switches between multiple environments (e.g. `PARRIS`) defined machine-wide in `~/.n8ncli-global.json`.
+- **Multi-Environment Management**: Configures and switches between multiple environments (e.g. `PROD`) defined machine-wide in `~/.n8ncli-global.json`.
 - **Fast Local Validation:** Validate workflows locally using schema checkers without connecting to the n8n instance.
 - **Git-friendly Sync:** Pull remote workflows (`pull`), inspect modifications (`status` and `diff`), and push changes (`push`) with built-in conflict detection.
 - **Curated References Library:** Automatically pull and cache workflows from a designated reference project to help AI agents learn patterns and reuse components.
@@ -49,14 +49,14 @@ n8ncli init \
   --project-id <your-project-id> \
   --ref-project-id <optional-reference-project-id> \
   --db-url <optional-postgresql-db-url> \
-  --env PARRIS
+  --env PROD
 ```
 This command creates:
-- `n8n/config/n8n-cli.json` (sync settings pointing to the `PARRIS` environment)
+- `n8n/config/n8n-cli.json` (sync settings pointing to the `PROD` environment)
 - `n8n/workflows/` (your workflow code files)
 - `n8n/references/` (reference workflows cache)
 - Configures `.gitignore` to keep credentials and local sync cache out of version control.
-- Saves connection credentials globally under the `PARRIS` key inside `~/.n8ncli-global.json`.
+- Saves connection credentials globally under the `PROD` key inside `~/.n8ncli-global.json`.
 
 ### 3. Pull Workflows
 Download remote workflows and convert them to TypeScript:

@@ -13,14 +13,14 @@
 Stores project-specific, non-sensitive IDs and environment selectors.
 ```json
 {
-  "env": "PARRIS",
+  "env": "PROD",
   "projectId": "5U5vIHIc1Ug5eVLK",
-  "projectName": "Workflows Accelerator <n8n@workflows.ac>",
+  "projectName": "My n8n Project <n8n@example.com>",
   "folderId": "Nz4UtQWrmrHMcZIE",
-  "folderName": "Case Management Platform",
+  "folderName": "Main Workflows",
   "references": {
     "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
+    "projectName": "My n8n Project <n8n@example.com>",
     "folderId": "3JiyzwujIPklu0w8",
     "folderName": "AI Examples"
   }
@@ -29,12 +29,12 @@ Stores project-specific, non-sensitive IDs and environment selectors.
 
 ### 1.2 Global Configuration
 **Path:** `~/.n8ncli-global.json` (Local to machine)
-Allows storing multiple environments at the instance level (e.g. for different client instances). When the local configuration specifies `"env": "PARRIS"`, parameters are resolved from the corresponding global environment.
+Allows storing multiple environments at the instance level (e.g. for different client instances). When the local configuration specifies `"env": "PROD"`, parameters are resolved from the corresponding global environment.
 ```json
 {
   "environments": {
-    "PARRIS": {
-      "instanceUrl": "https://n8n.parris.app",
+    "PROD": {
+      "instanceUrl": "https://n8n.example.com",
       "mcpCommand": "npx -y n8n-mcp",
       "dbUrl": "postgres://user:pass@host:port/db?sslmode=verify-full",
       "accessToken": "mcp-access-token",
