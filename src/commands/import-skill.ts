@@ -102,8 +102,40 @@ This project enforces strict style standards configured in \`n8n-standards.json\
   return section;
 }
 
-export function getSkillContent(standards: StandardsConfig): string {
-  let content = `# Skill: Managing n8n Workflows with n8ncli
+export function getSkillContent(standards: StandardsConfig, repoRoot?: string): string {
+  let version = '1.0.0';
+  if (repoRoot) {
+    try {
+      const pkgPath = path.join(repoRoot, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+        if (pkg.version) {
+          version = pkg.version;
+        }
+      }
+    } catch {
+      // fallback
+    }
+  }
+
+  let content = `---
+name: n8ncli
+version: ${version}
+description: |
+  Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
+  Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
+license: ISC
+compatibility: claude-code opencode
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - AskUserQuestion
+---
+
+# Skill: Managing n8n Workflows with n8ncli
 
 This skill enables the AI agent to manage, sync, validate, and test n8n workflows locally in this repository using the \`n8ncli\` tool.
 
@@ -216,7 +248,7 @@ export function writeSkillFile(repoRoot: string, targetDir = '.agents/skills/n8n
   }
   const fullPath = path.join(fullDir, filename);
   const standards = loadStandards(repoRoot);
-  fs.writeFileSync(fullPath, getSkillContent(standards), 'utf-8');
+  fs.writeFileSync(fullPath, getSkillContent(standards, repoRoot), 'utf-8');
   return path.relative(repoRoot, fullPath).replace(/\\/g, '/');
 }
 

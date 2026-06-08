@@ -7,5 +7,4 @@ dist/
 *.tsbuildinfo
 
 # n8ncli ignored files
-n8n/config/sync-state.json
-n8n/references/
+n8n/

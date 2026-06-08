@@ -1,3 +1,20 @@
+---
+name: n8ncli
+version: 1.0.1
+description: |
+  Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
+  Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
+license: ISC
+compatibility: claude-code opencode
+allowed-tools:
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - AskUserQuestion
+---
+
 # Skill: Managing n8n Workflows with n8ncli
 
 This skill enables the AI agent to manage, sync, validate, and test n8n workflows locally in this repository using the `n8ncli` tool.
@@ -121,3 +138,6 @@ This project enforces strict style standards configured in `n8n-standards.json`.
     - Blue (Color Code `2`): Design specifications or expected behaviors.
     - Green (Color Code `3`): Ideas or future improvements.
     - Purple (Color Code `4`): Needs review/help from a team member.
+
+### Ignores & Exceptions
+- **Tolerated/Ignored Words:** `sub-workflows, itemId, sub-workflow, defineBelow, executeOnce, high-value, Category-based, low-value, Re-converges, Metadata, high-level, metadata, responseId, embeddings, pgvector, PostgreSQL, retrieval-augmented, LLM, SaaS, backend, LangChain`
