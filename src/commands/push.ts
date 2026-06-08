@@ -503,6 +503,7 @@ export function pushCommand(program: Command) {
                     workflowId: rename.id,
                     code,
                     name: rename.name,
+                    operations: [],
                   });
 
                   delete syncState.workflows[rename.oldPath];
@@ -529,6 +530,7 @@ export function pushCommand(program: Command) {
                   workflowId: rename.id,
                   code,
                   name: rename.name,
+                  operations: [],
                 });
 
                 delete syncState.workflows[rename.oldPath];
@@ -629,6 +631,7 @@ export function pushCommand(program: Command) {
                 workflowId: entry.id,
                 code,
                 name,
+                operations: [],
               });
 
               let finalRelPath = relPath;
