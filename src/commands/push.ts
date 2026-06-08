@@ -432,6 +432,12 @@ export function pushCommand(program: Command) {
           }
         }
 
+        // Sync credentials with database first so placeholders exist before workflows are pushed
+        let unconfiguredCredentials: any[] = [];
+        if (dbUrl) {
+          unconfiguredCredentials = await syncCredentials(repoRoot, config, dbUrl, localDir);
+        }
+
         // 10. Connect to MCP and execute actions
         await withMcp(mcpCommand, accessToken, async (mcp) => {
           // A. Handle Deleted Workflows
@@ -675,18 +681,14 @@ export function pushCommand(program: Command) {
           saveSyncState(repoRoot, syncState, localDir);
         });
 
-        // Sync credentials with database and check for unconfigured ones
-        if (dbUrl) {
-          const unconfigured = await syncCredentials(repoRoot, config, dbUrl, localDir);
-          if (unconfigured.length > 0) {
-            output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
-            output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
-            for (const cred of unconfigured) {
-              output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
-              output.warn(`    Configure at: ${cred.url}`);
-            }
-            output.warn('----------------------------------------\n');
+        if (dbUrl && unconfiguredCredentials.length > 0) {
+          output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
+          output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
+          for (const cred of unconfiguredCredentials) {
+            output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
+            output.warn(`    Configure at: ${cred.url}`);
           }
+          output.warn('----------------------------------------\n');
         }
 
         output.log('Push complete.');

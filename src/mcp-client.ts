@@ -25,39 +25,41 @@ export class McpClient {
   private client: Client | null = null;
   private transport: StdioClientTransport | StreamableHTTPClientTransport | null = null;
 
-  async connect(commandStr: string, accessToken: string) {
-    let instanceUrl: string | undefined;
+  async connect(commandStr: string, accessToken: string, instanceUrlOverride?: string) {
+    let instanceUrl: string | undefined = instanceUrlOverride;
 
-    if (commandStr.startsWith('http://') || commandStr.startsWith('https://')) {
-      instanceUrl = commandStr;
-    } else {
-      try {
-        const repoRoot = findRepoRoot();
-        const globalConfig = loadGlobalConfig();
-        
-        let envKey = 'development';
-        if (repoRoot) {
-          try {
-            const config = loadConfig(repoRoot);
-            envKey = config.env || config.environmentName || 'development';
-          } catch (e) {
-            // Ignore
-          }
-        } else {
-          const envArgIndex = process.argv.indexOf('--env');
-          if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
-            envKey = process.argv[envArgIndex + 1];
+    if (!instanceUrl) {
+      if (commandStr.startsWith('http://') || commandStr.startsWith('https://')) {
+        instanceUrl = commandStr;
+      } else {
+        try {
+          const repoRoot = findRepoRoot();
+          const globalConfig = loadGlobalConfig();
+          
+          let envKey = 'development';
+          if (repoRoot) {
+            try {
+              const config = loadConfig(repoRoot);
+              envKey = config.env || config.environmentName || 'development';
+            } catch (e) {
+              // Ignore
+            }
           } else {
-            const envArg = process.argv.find(arg => arg.startsWith('--env='));
-            if (envArg) {
-              envKey = envArg.split('=')[1];
+            const envArgIndex = process.argv.indexOf('--env');
+            if (envArgIndex !== -1 && envArgIndex + 1 < process.argv.length) {
+              envKey = process.argv[envArgIndex + 1];
+            } else {
+              const envArg = process.argv.find(arg => arg.startsWith('--env='));
+              if (envArg) {
+                envKey = envArg.split('=')[1];
+              }
             }
           }
+          
+          instanceUrl = globalConfig.environments?.[envKey]?.instanceUrl || globalConfig.instanceUrl;
+        } catch (err) {
+          // Ignore
         }
-        
-        instanceUrl = globalConfig.environments?.[envKey]?.instanceUrl || globalConfig.instanceUrl;
-      } catch (err) {
-        // Ignore
       }
     }
 
@@ -159,10 +161,11 @@ export class McpClient {
 export async function withMcp<T>(
   commandStr: string,
   accessToken: string,
-  fn: (client: McpClient) => Promise<T>
+  fn: (client: McpClient) => Promise<T>,
+  instanceUrlOverride?: string
 ): Promise<T> {
   const client = new McpClient();
-  await client.connect(commandStr, accessToken);
+  await client.connect(commandStr, accessToken, instanceUrlOverride);
   try {
     return await fn(client);
   } finally {

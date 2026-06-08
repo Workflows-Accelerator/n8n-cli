@@ -1,14 +1,8 @@
 {
-  "env": "PARRIS",
+  "env": "Workflows Accelerator (us)",
   "localDir": "n8n",
-  "projectId": "5U5vIHIc1Ug5eVLK",
-  "projectName": "Workflows Accelerator <n8n@workflows.ac>",
-  "folderId": "3JiyzwujIPklu0w8",
-  "folderName": "AI Examples",
-  "references": {
-    "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "Workflows Accelerator <n8n@workflows.ac>",
-    "folderId": "wph53hSZpj5cTuba",
-    "folderName": "Discovery"
-  }
+  "projectId": "FFnnsLP4INWt40Nx",
+  "projectName": "Templates",
+  "folderId": "EFfrSoAgNNxNrUNB",
+  "folderName": "Workflow Examples"
 }

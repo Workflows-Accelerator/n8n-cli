@@ -121,6 +121,3 @@ This project enforces strict style standards configured in `n8n-standards.json`.
     - Blue (Color Code `2`): Design specifications or expected behaviors.
     - Green (Color Code `3`): Ideas or future improvements.
     - Purple (Color Code `4`): Needs review/help from a team member.
-
-### Ignores & Exceptions
-- **Tolerated/Ignored Words:** `ignoredword, LinkText`
