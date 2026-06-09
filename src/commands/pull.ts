@@ -2,57 +2,13 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import pg from 'pg';
-import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials, fetchWorkflowsPaginated } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
-async function fetchWorkflowsPaginated(
-  instanceUrl: string,
-  projectId: string,
-  headers: Record<string, string>,
-  retries = 3
-): Promise<any[]> {
-  let workflows: any[] = [];
-  let cursor = '';
-  while (true) {
-    const url = `${instanceUrl}/api/v1/workflows?projectId=${projectId}&limit=250${cursor ? `&cursor=${cursor}` : ''}`;
-    let data: any = null;
-    
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch(url, { headers });
-        if (res.ok) {
-          data = await res.json();
-          break;
-        }
-        if (res.status === 429 && attempt < retries) {
-          output.warn(`Rate limit listing workflows. Retrying in 2 seconds...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-        if (attempt === retries) {
-          throw new Error(`REST API listing failed with status ${res.status}: ${res.statusText}`);
-        }
-      } catch (err) {
-        if (attempt === retries) throw err;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-    
-    const pageWorkflows = Array.isArray(data) ? data : (data.data || data.workflows || []);
-    workflows = workflows.concat(pageWorkflows);
-    
-    const nextCursor = data?.nextCursor;
-    if (!nextCursor || pageWorkflows.length === 0) {
-      break;
-    }
-    cursor = nextCursor;
-  }
-  return workflows;
-}
 
 async function enableMcpForWorkflow(
   mcp: McpClient,

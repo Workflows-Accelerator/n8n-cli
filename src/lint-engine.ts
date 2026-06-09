@@ -555,7 +555,7 @@ export function validateWorkflowAgainstStandards(
   if (isParentFolderIgnored) {
     return { errors: [], warnings: [] };
   }
-
+ 
   const folderRegex = standards.folders?.naming?.regex ? new RegExp(standards.folders.naming.regex) : null;
   const folderErrMessage = standards.folders?.naming?.errorMessage || (standards.folders?.naming?.regex ? `Folder name does not match regex: ${standards.folders.naming.regex}` : '');
   
@@ -564,11 +564,11 @@ export function validateWorkflowAgainstStandards(
       continue;
     }
     if (folderRegex && !folderRegex.test(folderPart)) {
-      errors.push(`Folder name "${folderPart}" violates naming standards. ${folderErrMessage}`);
+      warnings.push(`Folder name "${folderPart}" violates naming standards. ${folderErrMessage}`);
     }
     const titleCased = toSmartTitleCase(folderPart, standards);
     if (folderPart !== titleCased) {
-      errors.push(`Folder name "${folderPart}" is not in Title Case. Expected "${titleCased}".`);
+      warnings.push(`Folder name "${folderPart}" is not in Title Case. Expected "${titleCased}".`);
     }
   }
   
@@ -578,14 +578,14 @@ export function validateWorkflowAgainstStandards(
     const wfRegex = new RegExp(standards.workflows.naming.regex);
     const errMessage = standards.workflows.naming.errorMessage || `Workflow name does not match regex: ${standards.workflows.naming.regex}`;
     if (!wfRegex.test(workflowName)) {
-      errors.push(`Workflow name "${workflowName}" violates naming standards. ${errMessage}`);
+      warnings.push(`Workflow name "${workflowName}" violates naming standards. ${errMessage}`);
     }
   }
   const titleCasedWf = toSmartTitleCase(workflowName, standards);
   if (workflowName !== titleCasedWf) {
-    errors.push(`Workflow name "${workflowName}" is not in Title Case. Expected "${titleCasedWf}".`);
+    warnings.push(`Workflow name "${workflowName}" is not in Title Case. Expected "${titleCasedWf}".`);
   }
-
+ 
   // Check default or banned workflow names
   const workflowNameLower = workflowName.toLowerCase().trim();
   const defaultBanned = ['my workflow', 'new workflow', 'workflow', 'untitled workflow'];
@@ -598,14 +598,14 @@ export function validateWorkflowAgainstStandards(
     return regex.test(workflowNameLower);
   });
   if (isBannedWf) {
-    errors.push(`Workflow name "${workflowName}" is using a banned default name (e.g., "My workflow").`);
+    warnings.push(`Workflow name "${workflowName}" is using a banned default name (e.g., "My workflow").`);
   }
   
   // Workflow Description Note Check
   if (standards.workflows?.requireDescription) {
     const desc = workflowJson.description || workflowJson.settings?.description;
     if (!desc || desc.trim() === '') {
-      errors.push(`Workflow is missing a description.`);
+      warnings.push(`Workflow is missing a description.`);
     }
   }
   
@@ -614,7 +614,7 @@ export function validateWorkflowAgainstStandards(
     const tags = workflowJson.tags || [];
     const minTags = standards.workflows.minTags || 1;
     if (tags.length < minTags) {
-      errors.push(`Workflow must have at least ${minTags} tag(s), but has ${tags.length}.`);
+      warnings.push(`Workflow must have at least ${minTags} tag(s), but has ${tags.length}.`);
     }
   }
   
@@ -628,7 +628,7 @@ export function validateWorkflowAgainstStandards(
     if (checkFields.includes('workflow.description') && desc) {
       const spellResult = checkSentenceSpelling(desc, allowedWords, ignoredWords);
       if (!spellResult.ok) {
-        errors.push(`Workflow description contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
+        warnings.push(`Workflow description contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
       }
     }
   }
@@ -645,7 +645,7 @@ export function validateWorkflowAgainstStandards(
     if (isIgnored(nodeId, ignore.nodes) || isIgnored(nodeName, ignore.nodes) || isIgnored(nodeType, ignore.nodes)) {
       continue;
     }
-
+ 
     // Sticky Note Validation
     if (nodeType === 'n8n-nodes-base.stickyNote') {
       const stickyOpts = standards.nodes?.stickyNotes || {};
@@ -659,7 +659,7 @@ export function validateWorkflowAgainstStandards(
       if (stickyOpts.markdownValidation !== false && content) {
         const mdErrors = validateMarkdown(content);
         for (const mdErr of mdErrors) {
-          errors.push(`Sticky Note "${nodeName}" markdown error: ${mdErr}`);
+          warnings.push(`Sticky Note "${nodeName}" markdown error: ${mdErr}`);
         }
       }
       
@@ -668,7 +668,7 @@ export function validateWorkflowAgainstStandards(
         const nodeColor = node.parameters?.color;
         const validColors = Object.values(stickyOpts.colors).filter(c => c !== undefined) as number[];
         if (nodeColor !== undefined && validColors.length > 0 && !validColors.includes(nodeColor)) {
-          errors.push(`Sticky Note "${nodeName}" is using color ${nodeColor}, which is not in the approved colors: ${JSON.stringify(stickyOpts.colors)}.`);
+          warnings.push(`Sticky Note "${nodeName}" is using color ${nodeColor}, which is not in the approved colors: ${JSON.stringify(stickyOpts.colors)}.`);
         }
       }
       
@@ -676,7 +676,7 @@ export function validateWorkflowAgainstStandards(
       if (standards.language?.enabled && standards.language.checkFields?.includes('node.notes') && content) {
         const spellResult = checkSentenceSpelling(content, allowedWords, ignoredWords);
         if (!spellResult.ok) {
-          errors.push(`Sticky Note "${nodeName}" content contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
+          warnings.push(`Sticky Note "${nodeName}" content contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
       
@@ -694,7 +694,7 @@ export function validateWorkflowAgainstStandards(
     const isDefaultName = (nodeName.toLowerCase() === defaultDisplay.toLowerCase() || nodeName.toLowerCase() === typeBase.toLowerCase());
     
     if (isDefaultName && standards.nodes?.naming?.tolerateDefaultNames === false) {
-      errors.push(`Node "${nodeName}" is using the default name for node type "${nodeType}". Default names are banned.`);
+      warnings.push(`Node "${nodeName}" is using the default name for node type "${nodeType}". Default names are banned.`);
     }
     
     // Enforce node naming regex
@@ -704,7 +704,7 @@ export function validateWorkflowAgainstStandards(
         const nodeRegex = new RegExp(standards.nodes.naming.regex);
         const errMessage = standards.nodes.naming.errorMessage || `Node name does not match regex: ${standards.nodes.naming.regex}`;
         if (!nodeRegex.test(nodeName)) {
-          errors.push(`Node name "${nodeName}" violates naming standards. ${errMessage}`);
+          warnings.push(`Node name "${nodeName}" violates naming standards. ${errMessage}`);
         }
       }
       
@@ -714,12 +714,12 @@ export function validateWorkflowAgainstStandards(
       if (isWebhookNode) {
         const webhookPattern = /^(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\s+\/[a-zA-Z0-9\-_\/\{\}:]*$/;
         if (!webhookPattern.test(nodeName)) {
-          errors.push(`Webhook trigger node name "${nodeName}" must follow the convention "[METHOD] /[endpoint]" (e.g., "POST /users").`);
+          warnings.push(`Webhook trigger node name "${nodeName}" must follow the convention "[METHOD] /[endpoint]" (e.g., "POST /users").`);
         }
       } else if (!isTitleCaseIgnored) {
         const titleCasedNode = toSmartTitleCase(nodeName, standards);
         if (nodeName !== titleCasedNode) {
-          errors.push(`Node name "${nodeName}" is not in Title Case. Expected "${titleCasedNode}".`);
+          warnings.push(`Node name "${nodeName}" is not in Title Case. Expected "${titleCasedNode}".`);
         }
       }
     }
@@ -733,11 +733,11 @@ export function validateWorkflowAgainstStandards(
       
       if (format === 'parenthesis') {
         if (simpleMatch && !parenMatch) {
-          errors.push(`Node "${nodeName}" has duplicate naming violation. Expected parenthesis format (e.g., "${simpleMatch[1]} (${simpleMatch[2]})") but got "${nodeName}".`);
+          warnings.push(`Node "${nodeName}" has duplicate naming violation. Expected parenthesis format (e.g., "${simpleMatch[1]} (${simpleMatch[2]})") but got "${nodeName}".`);
         }
       } else if (format === 'simple') {
         if (parenMatch && !simpleMatch) {
-          errors.push(`Node "${nodeName}" has duplicate naming violation. Expected simple numbering format (e.g., "${parenMatch[1]}${parenMatch[2]}") but got "${nodeName}".`);
+          warnings.push(`Node "${nodeName}" has duplicate naming violation. Expected simple numbering format (e.g., "${parenMatch[1]}${parenMatch[2]}") but got "${nodeName}".`);
         }
       }
     }
@@ -752,7 +752,7 @@ export function validateWorkflowAgainstStandards(
       if (requireNotes || requireNotesForTypes.includes(nodeType)) {
         if (!hasNote) {
           const errMessage = standards.nodes.notes?.errorMessage || `Notes are required for node: ${nodeName}`;
-          errors.push(`Node "${nodeName}" is missing a description note. ${errMessage} (Note: In the TypeScript SDK, notes must be configured inside the .config({ notes: "...", notesInFlow: true }) block)`);
+          warnings.push(`Node "${nodeName}" is missing a description note. ${errMessage} (Note: In the TypeScript SDK, notes must be configured inside the .config({ notes: "...", notesInFlow: true }) block)`);
         }
       }
     }
@@ -771,7 +771,7 @@ export function validateWorkflowAgainstStandards(
           }
         }
         if (invalidWords.length > 0) {
-          errors.push(`Node name "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
+          warnings.push(`Node name "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
       
@@ -779,7 +779,7 @@ export function validateWorkflowAgainstStandards(
       if (checkFields.includes('node.notes') && hasNote && node.notes) {
         const spellResult = checkSentenceSpelling(node.notes, allowedWords, ignoredWords);
         if (!spellResult.ok) {
-          errors.push(`Node "${nodeName}" notes contain spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
+          warnings.push(`Node "${nodeName}" notes contain spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
     }
@@ -798,7 +798,7 @@ export function validateWorkflowAgainstStandards(
         
         // Casing Check
         if (convention && !checkCasing(varName, convention)) {
-          errors.push(`Variable "${varName}" in node "${nodeName}" violates casing convention. ${casingErrMessage}`);
+          warnings.push(`Variable "${varName}" in node "${nodeName}" violates casing convention. ${casingErrMessage}`);
         }
         
         // Language Check on Variable Names
@@ -811,7 +811,7 @@ export function validateWorkflowAgainstStandards(
             }
           }
           if (invalidWords.length > 0) {
-            errors.push(`Variable "${varName}" in node "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
+            warnings.push(`Variable "${varName}" in node "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
           }
         }
       }
@@ -878,6 +878,18 @@ export function fixWorkflowAgainstStandards(
       fixedCount++;
     }
   }
+
+  // Scaffold missing workflow description
+  if (standards.workflows?.requireDescription) {
+    const desc = modifiedJson.description || modifiedJson.settings?.description;
+    if (!desc || desc.trim() === '') {
+      if (!modifiedJson.settings) {
+        modifiedJson.settings = {};
+      }
+      modifiedJson.settings.description = '// TODO: add description/notes';
+      fixedCount++;
+    }
+  }
   
   if (nodes.length > 0) {
     for (const node of nodes) {
@@ -917,6 +929,7 @@ export function fixWorkflowAgainstStandards(
         newName = toSmartTitleCase(newName, standards);
       }
       
+      let nodeModified = false;
       if (newName && newName !== oldName) {
         node.name = newName;
         // Fix connections
@@ -924,6 +937,23 @@ export function fixWorkflowAgainstStandards(
         // Fix expression references in parameters
         const exprFixed = renameNodeInExpressions(modifiedJson, oldName, newName);
         fixedCount++;
+        nodeModified = true;
+      }
+
+      const isNotesIgnored = isIgnored(nodeType, standards.ignoreRules?.nodes?.notes) || isIgnored(oldName, standards.ignoreRules?.nodes?.notes);
+      if (!isNotesIgnored) {
+        const requireNotes = standards.nodes?.notes?.requireNotes;
+        const requireNotesForTypes = standards.nodes?.notes?.requireNotesForTypes || [];
+        if (requireNotes || requireNotesForTypes.includes(nodeType)) {
+          const hasNote = node.notesInFlow === true && typeof node.notes === 'string' && node.notes.trim() !== '';
+          if (!hasNote) {
+            node.notes = '// TODO: add description/notes';
+            node.notesInFlow = true;
+            if (!nodeModified) {
+              fixedCount++;
+            }
+          }
+        }
       }
     }
   }

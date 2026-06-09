@@ -8,7 +8,7 @@ import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
-import { loadStandards, validateWorkflowAgainstStandards } from '../lint-engine.js';
+import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
 
 function extractIdFromResponse(response: any): string | null {
   if (!response) return null;
@@ -86,7 +86,43 @@ export function pushCommand(program: Command) {
 
         // 1. Scan local .workflow.ts files
         const localFiles = glob.sync('**/*.workflow.ts', { cwd: localWorkflowsDir });
-        const localRelativePaths = localFiles.map(f => f.replace(/\\/g, '/')); // Normalize path separators
+        const localRelativePaths: string[] = [];
+        const ignoredRelativePaths = new Set<string>();
+
+        const standards = loadStandards(repoRoot);
+
+        for (const file of localFiles) {
+          const relPath = file.replace(/\\/g, '/');
+          const fullPath = path.join(localWorkflowsDir, file);
+          let isIgnoredFile = false;
+          try {
+            const content = fs.readFileSync(fullPath, 'utf-8');
+            const lines = content.split('\n', 10);
+            for (const line of lines) {
+              if (line.includes('n8ncli-ignore') || line.includes('n8ncli-push-ignore') || line.includes('n8n-cli-ignore')) {
+                isIgnoredFile = true;
+                break;
+              }
+            }
+          } catch (e) {}
+
+          const workflowJsonName = path.basename(relPath, '.workflow.ts');
+          if (isIgnored(relPath, standards.ignore?.workflows) || isIgnored(workflowJsonName, standards.ignore?.workflows)) {
+            isIgnoredFile = true;
+          }
+
+          if (config && Array.isArray((config as any).ignorePush)) {
+            if (isIgnored(relPath, (config as any).ignorePush) || isIgnored(workflowJsonName, (config as any).ignorePush)) {
+              isIgnoredFile = true;
+            }
+          }
+
+          if (isIgnoredFile) {
+            ignoredRelativePaths.add(relPath);
+          } else {
+            localRelativePaths.push(relPath);
+          }
+        }
 
         const localHashes: Record<string, string> = {};
         const localNames: Record<string, string> = {};
@@ -165,7 +201,7 @@ export function pushCommand(program: Command) {
 
         // Find deleted files
         for (const [relPath, entry] of Object.entries(syncState.workflows)) {
-          if (!localRelativePaths.includes(relPath)) {
+          if (!localRelativePaths.includes(relPath) && !ignoredRelativePaths.has(relPath)) {
             deletedPaths.push(relPath);
           }
         }
@@ -382,6 +418,21 @@ export function pushCommand(program: Command) {
           }
         }
 
+        // Sync credentials first and warn early
+        let unconfiguredCredentials: any[] = [];
+        if (dbUrl) {
+          unconfiguredCredentials = await syncCredentials(repoRoot, config, dbUrl, localDir);
+          if (unconfiguredCredentials.length > 0) {
+            output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
+            output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
+            for (const cred of unconfiguredCredentials) {
+              output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
+              output.warn(`    Configure at: ${cred.url}`);
+            }
+            output.warn('----------------------------------------\n');
+          }
+        }
+
         // If dry-run, exit successfully
         if (options.dryRun) {
           output.log('\n[Dry Run] Push simulated successfully.');
@@ -432,11 +483,7 @@ export function pushCommand(program: Command) {
           }
         }
 
-        // Sync credentials with database first so placeholders exist before workflows are pushed
-        let unconfiguredCredentials: any[] = [];
-        if (dbUrl) {
-          unconfiguredCredentials = await syncCredentials(repoRoot, config, dbUrl, localDir);
-        }
+        // Placeholders already synced early
 
         // 10. Connect to MCP and execute actions
         await withMcp(mcpCommand, accessToken, async (mcp) => {
@@ -523,6 +570,28 @@ export function pushCommand(program: Command) {
                 });
                 if (!res.ok) {
                   const errorText = await res.text();
+                  try {
+                    const json = JSON.parse(errorText);
+                    if (json.message && json.message.toLowerCase().includes('additional properties')) {
+                      let offendingField = '';
+                      if (Array.isArray(json.validation)) {
+                        const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
+                        if (addProp && addProp.params && addProp.params.additionalProperty) {
+                          offendingField = addProp.params.additionalProperty;
+                        }
+                      }
+                      if (!offendingField && Array.isArray(json.errors)) {
+                        const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
+                        if (addProp && addProp.params && addProp.params.additionalProperty) {
+                          offendingField = addProp.params.additionalProperty;
+                        }
+                      }
+                      if (offendingField) {
+                        output.warn(`Warning: Skipping push for workflow '${rename.name}' (ID: ${rename.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
+                        continue;
+                      }
+                    }
+                  } catch (e) {}
                   throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
                 }
 
@@ -700,6 +769,28 @@ export function pushCommand(program: Command) {
                 });
                 if (!res.ok) {
                   const errorText = await res.text();
+                  try {
+                    const json = JSON.parse(errorText);
+                    if (json.message && json.message.toLowerCase().includes('additional properties')) {
+                      let offendingField = '';
+                      if (Array.isArray(json.validation)) {
+                        const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
+                        if (addProp && addProp.params && addProp.params.additionalProperty) {
+                          offendingField = addProp.params.additionalProperty;
+                        }
+                      }
+                      if (!offendingField && Array.isArray(json.errors)) {
+                        const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
+                        if (addProp && addProp.params && addProp.params.additionalProperty) {
+                          offendingField = addProp.params.additionalProperty;
+                        }
+                      }
+                      if (offendingField) {
+                        output.warn(`Warning: Skipping push for workflow '${name}' (ID: ${entry.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
+                        continue;
+                      }
+                    }
+                  } catch (e) {}
                   throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
                 }
 
@@ -790,15 +881,7 @@ export function pushCommand(program: Command) {
           saveSyncState(repoRoot, syncState, localDir);
         });
 
-        if (dbUrl && unconfiguredCredentials.length > 0) {
-          output.warn('\n--- UNCONFIGURED CREDENTIALS DETECTED ---');
-          output.warn('The following credentials need to be configured in n8n (direct project links, zero-log):');
-          for (const cred of unconfiguredCredentials) {
-            output.warn(`  - Name: "${cred.name}" (Type: ${cred.type})`);
-            output.warn(`    Configure at: ${cred.url}`);
-          }
-          output.warn('----------------------------------------\n');
-        }
+        // Warnings already printed early
 
         output.log('Push complete.');
         if (hasConflicts) {

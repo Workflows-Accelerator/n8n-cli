@@ -33,25 +33,25 @@ This file tracks improvements, features, and fixes for `n8n-cli`.
 
 ## 🟡 Medium (Enhancements & CLI Refinement)
 
-- [ ] **8. Distinguish Errors vs. Warnings in Linter Output**
+- [x] **8. Distinguish Errors vs. Warnings in Linter Output**
   - *Problem:* `validate` output shows everything as `error:`, making it hard to separate hard schema errors (breaks deployment) from style warnings (e.g. spelling/naming).
   - *Fix:* Visually prefix and distinguish `[ERROR]` vs `[WARNING]` in output while keeping exit code behaviors.
-- [ ] **9. Section/Targeting Options for `sdk` Command**
+- [x] **9. Section/Targeting Options for `sdk` Command**
   - *Problem:* `n8ncli sdk all` outputs a massive list.
   - *Fix:* Add targeting argument (e.g., `n8ncli sdk webhook` or `n8ncli sdk code-node`).
-- [ ] **10. Better Error Reporting on Push Bad Request**
+- [x] **10. Better Error Reporting on Push Bad Request**
   - *Problem:* When a push fails (e.g. because of rename), n8n API returns `Bad Request. Details: {"message":"request/body must NOT have additional properties"}` with no details on the offending property.
   - *Fix:* Catch, parse, and print the offending field name, and gracefully skip/warn instead of failing silently.
-- [ ] **11. Show Remote-Only Workflows in `status`**
+- [x] **11. Show Remote-Only Workflows in `status`**
   - *Problem:* `status` doesn't show workflows that exist on remote but have no local file.
   - *Fix:* Add a "Remote-Only Workflows" section to the status output.
-- [ ] **12. Surface Credential Warnings at Top of Push**
+- [x] **12. Surface Credential Warnings at Top of Push**
   - *Problem:* Warnings about unconfigured credentials are buried at the bottom of push logs.
   - *Fix:* Highlight credential warnings prominently at the top/summary of the push output.
-- [ ] **13. Auto-Scaffold TODOs for Description/Notes Gaps in `--fix`**
+- [x] **13. Auto-Scaffold TODOs for Description/Notes Gaps in `--fix`**
   - *Problem:* `lint --fix` fixes case issues but doesn't scaffold missing workflow descriptions or code notes.
   - *Fix:* Have it insert `// TODO: add description/notes` stub at the correct config location.
-- [ ] **14. Push Ignore Annotation / Config**
+- [x] **14. Push Ignore Annotation / Config**
   - *Problem:* No way to mark specific workflows (e.g., placeholder workflows without triggers) to be ignored during push warnings.
   - *Fix:* Add support for an inline comment or configuration-based ignore directive.
 

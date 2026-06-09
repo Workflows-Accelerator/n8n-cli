@@ -54,6 +54,24 @@ export function lintCommand(program: Command) {
 
           try {
             const code = fs.readFileSync(fullPath, 'utf-8');
+
+            // Check for inline ignore comments
+            let isIgnoredFile = false;
+            const lines = code.split('\n', 10);
+            for (const line of lines) {
+              if (line.includes('n8ncli-ignore') || line.includes('n8ncli-push-ignore') || line.includes('n8n-cli-ignore')) {
+                isIgnoredFile = true;
+                break;
+              }
+            }
+
+            if (isIgnoredFile) {
+              if (!output.getJsonMode()) {
+                output.log(`[LINT-PASS] ${relativePath} (skipped: inline ignore comment)`);
+              }
+              continue;
+            }
+
             const builder = parseWorkflowCodeToBuilder(code);
             const workflowJson = builder.toJSON();
 
@@ -138,27 +156,27 @@ export function lintCommand(program: Command) {
             if (output.getJsonMode()) {
               jsonResults.push({
                 file: relativePath,
-                success: !hasErrors,
+                success: !hasErrors && !hasWarnings,
                 errors,
                 warnings
               });
             }
 
-            if (hasErrors) {
+            if (hasErrors || hasWarnings) {
               if (!output.getJsonMode()) {
-                output.error(`[LINT-FAIL] ${relativePath}`);
+                if (hasErrors) {
+                  output.error(`[LINT-FAIL] ${relativePath}`);
+                } else {
+                  output.log(`[LINT-WARN] ${relativePath}`);
+                }
                 for (const err of errors) {
-                  output.error(`  - ${err}`);
+                  output.error(`  - [ERROR] ${err}`);
+                }
+                for (const warn of warnings) {
+                  output.warn(`  - [WARNING] ${warn}`);
                 }
               }
               overallSuccess = false;
-            } else if (hasWarnings) {
-              if (!output.getJsonMode()) {
-                output.log(`[LINT-WARN] ${relativePath}`);
-                for (const warn of warnings) {
-                  output.warn(`  - ${warn}`);
-                }
-              }
             } else {
               if (!output.getJsonMode()) {
                 output.log(`[LINT-PASS] ${relativePath}`);

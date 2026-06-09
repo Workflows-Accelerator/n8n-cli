@@ -464,6 +464,52 @@ export function saveGlobalConfig(config: Partial<GlobalEnvConfig> & Partial<Glob
   fs.writeFileSync(p, JSON.stringify(existing, null, 2), 'utf-8');
 }
 
+export async function fetchWorkflowsPaginated(
+  instanceUrl: string,
+  projectId: string,
+  headers: Record<string, string>,
+  retries = 3
+): Promise<any[]> {
+  let workflows: any[] = [];
+  let cursor = '';
+  while (true) {
+    const cleanUrl = instanceUrl.replace(/\/$/, '');
+    const url = `${cleanUrl}/api/v1/workflows?projectId=${projectId}&limit=250${cursor ? `&cursor=${cursor}` : ''}`;
+    let data: any = null;
+    
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        const res = await fetch(url, { headers });
+        if (res.ok) {
+          data = await res.json();
+          break;
+        }
+        if (res.status === 429 && attempt < retries) {
+          output.warn(`Rate limit listing workflows. Retrying in 2 seconds...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+        if (attempt === retries) {
+          throw new Error(`REST API listing failed with status ${res.status}: ${res.statusText}`);
+        }
+      } catch (err) {
+        if (attempt === retries) throw err;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    const pageWorkflows = Array.isArray(data) ? data : (data.data || data.workflows || []);
+    workflows = workflows.concat(pageWorkflows);
+    
+    const nextCursor = data?.nextCursor;
+    if (!nextCursor || pageWorkflows.length === 0) {
+      break;
+    }
+    cursor = nextCursor;
+  }
+  return workflows;
+}
+
 export async function fetchWorkflowsWithDb(dbUrl: string): Promise<any[] | null> {
   const pgClient = pg as any;
   const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;

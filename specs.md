@@ -158,9 +158,9 @@ n8ncli push [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url
 
 ### `n8ncli status`
 ```bash
-n8ncli status
+n8ncli status [--mcp-command <cmd>] [--access-token <token>] [--api-key <key>] [--url <url>] [--env <name>]
 ```
-- Compares local files against `sync-state.json`. Outputs untracked, modified, deleted, or unchanged files. Local-only operation.
+- Compares local files against `sync-state.json` and optionally remote workflows. Outputs untracked, modified, deleted, unchanged, or remote-only workflows.
 
 ### `n8ncli diff`
 ```bash
@@ -208,9 +208,9 @@ n8ncli unpublish <workflow-id-or-file>
 
 ### `n8ncli sdk`
 ```bash
-n8ncli sdk [section]
+n8ncli sdk [section-or-query]
 ```
-- Prints n8n Workflow SDK documentation (`patterns`, `expressions`, `functions`, `guidelines`, `design`, `all`).
+- Prints n8n Workflow SDK documentation. Supports specific sections (`patterns`, `expressions`, `functions`, `guidelines`, `design`, `all`) or case-insensitive keyword search filtering.
 
 ### `n8ncli lint`
 ```bash
@@ -244,9 +244,15 @@ Whenever a local workflow file ends with `.json`, execution of commands automati
 - Deletes the original `.json` file to prevent duplicate tracking or conflict.
 - Continues execution using the newly converted `.workflow.ts` file path.
 
-### 5.4 Differentiated Exit Codes
+### 5.4 Inline Ignore Comments & Config
+Workflows can be ignored from status, push synchronization, schema validation, and standards linting:
+- **Inline Comment:** Add `// n8ncli-ignore` or `// n8ncli-push-ignore` or `// n8n-cli-ignore` within the first 10 lines of the workflow file.
+- **Standards Config:** Add glob patterns/filenames under `ignore.workflows` in `n8n-standards.json`.
+- **Local Config:** Add glob patterns/filenames under `ignorePush` in `n8n/config/n8n-cli.json`.
+
+### 5.5 Differentiated Exit Codes
 The CLI utilizes exit codes to allow programmatic integration with AI agents:
 - **`0`**: Successful command completion.
 - **`1`**: General runtime execution or connection error.
-- **`2`**: Validation failures (validation errors detected during `validate`).
+- **`2`**: Validation failures (validation errors detected during `validate` or `lint`).
 - **`3`**: Synchronization conflicts (local/remote modifications diverged during `pull` or `push` without `--force`).

@@ -160,7 +160,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 ### Syncing
 - \`n8ncli pull [--force] [--hard]\`: Pull workflows from n8n instance and sync folder metadata.
 - \`n8ncli push [--force] [--dry-run]\`: Deploy local modifications and folder structures.
-- \`n8ncli status\`: List modified, untracked, or deleted files.
+- \`n8ncli status\`: List modified, untracked, deleted, or remote-only files.
 - \`n8ncli diff <file>\`: Show line diff of a local file against remote.
 
 ### Verification & Testing
@@ -174,7 +174,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli unpublish <file-or-id>\`: Deactivate a workflow.
 - \`n8ncli nodes search <queries...>\`: Search available node types (e.g. \`gmail\`, \`slack\`).
 - \`n8ncli nodes types <nodeIds...>\`: View exact TypeScript parameters and interfaces for nodes.
-- \`n8ncli sdk [section]\`: View workflow SDK guidelines, expressions, patterns, and rules.
+- \`n8ncli sdk [section-or-query]\`: View workflow SDK guidelines, expressions, patterns, and rules, or search case-insensitively for a keyword.
 
 ---
 
@@ -242,6 +242,7 @@ Follow these steps when creating, editing, or managing workflows:
 
 - **File Renaming on Pull:** The \`pull\` command uses each workflow's remote display name as its filename (e.g., \`My Workflow.workflow.ts\`). Local files using kebab-case or other naming structures will be renamed on pull. Avoid relying on custom local filenames.
 - **Node Notes & notesInFlow Placement:** In the TypeScript SDK, node-level descriptions/notes and the \`notesInFlow\` flag must be placed inside the \`.config()\` block of the node, **not** as top-level node arguments or inside parameters. See the example below.
+- **Inline Ignore Comments:** To prevent a workflow from being synced on push, validated, or linted, add a comment like \`// n8ncli-ignore\` or \`// n8ncli-push-ignore\` at the top (within the first 10 lines) of the workflow file.
 
 ---
 

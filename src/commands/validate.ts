@@ -95,6 +95,29 @@ export function validateCommand(program: Command) {
             continue;
           }
 
+          // Check for inline ignore comments
+          let isIgnoredFile = false;
+          try {
+            const content = fs.readFileSync(file, 'utf-8');
+            const lines = content.split('\n', 10);
+            for (const line of lines) {
+              if (line.includes('n8ncli-ignore') || line.includes('n8ncli-push-ignore') || line.includes('n8n-cli-ignore')) {
+                isIgnoredFile = true;
+                break;
+              }
+            }
+          } catch (e) {}
+
+          if (isIgnoredFile) {
+            parsedWorkflows.push({
+              file,
+              relativePath,
+              isSkipped: true,
+              skipReason: 'inline ignore comment'
+            });
+            continue;
+          }
+
           // Check if parent directory is ignored
           const folderParts = path.dirname(relativePath).split('/').filter(p => p && p !== '.' && p !== 'workflows' && p !== 'n8n');
           const isParentFolderIgnored = folderParts.some(folderPart => isIgnored(folderPart, standards.ignore?.folders));
@@ -213,12 +236,16 @@ export function validateCommand(program: Command) {
           const errors = validation.errors.map((e: any) => e.message);
           const warnings = validation.warnings.map((w: any) => w.message);
 
+          let hasLintWarnings = false;
           if (options.lint) {
             try {
               const workflowJson = builder.toJSON();
               const lintRes = validateWorkflowAgainstStandards(workflowJson, standards, relativePath);
               errors.push(...lintRes.errors);
               warnings.push(...lintRes.warnings);
+              if (lintRes.warnings.length > 0) {
+                hasLintWarnings = true;
+              }
             } catch (err) {
               errors.push(`Lint checks failed to run: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -256,20 +283,22 @@ export function validateCommand(program: Command) {
             });
           }
 
-          if (hasErrors) {
+          if (hasErrors || hasWarnings) {
             if (!output.getJsonMode()) {
-              output.error(`[INVALID] ${relativePath}`);
+              if (hasErrors) {
+                output.error(`[INVALID] ${relativePath}`);
+              } else {
+                output.log(`[WARNING] ${relativePath}`);
+              }
               for (const err of errors) {
-                output.error(`  - ${err}`);
+                output.error(`  - [ERROR] ${err}`);
+              }
+              for (const warn of warnings) {
+                output.warn(`  - [WARNING] ${warn}`);
               }
             }
-            overallSuccess = false;
-          } else if (hasWarnings) {
-            if (!output.getJsonMode()) {
-              output.log(`[WARNING] ${relativePath}`);
-              for (const warn of warnings) {
-                output.warn(`  - ${warn}`);
-              }
+            if (hasErrors || hasLintWarnings) {
+              overallSuccess = false;
             }
           } else {
             if (!output.getJsonMode()) {
