@@ -7,6 +7,7 @@ import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
+import { loadSyncState, calculateHash } from '../sync-state.js';
 
 function parseLatestVersions(text: string): Record<string, number> {
   const versions: Record<string, number> = {};
@@ -44,6 +45,7 @@ export function validateCommand(program: Command) {
     .option('--url <url>', 'override n8n instance URL')
     .option('--env <name>', 'override environment name')
     .option('--lint', 'also run standards lint checks alongside validation')
+    .option('--only-modified', 'only validate files that have local modifications', false)
     .action(async (files, options) => {
       try {
         const repoRoot = findRepoRoot();
@@ -53,6 +55,7 @@ export function validateCommand(program: Command) {
 
         const config = loadConfig(repoRoot);
         const localDir = config.localDir || 'n8n';
+        const syncState = loadSyncState(repoRoot, localDir);
 
         const workflowsDir = path.join(repoRoot, localDir, 'workflows');
         convertLocalJsonWorkflows(workflowsDir);
@@ -93,6 +96,27 @@ export function validateCommand(program: Command) {
           if (!fs.existsSync(file)) {
             parsedWorkflows.push({ file, relativePath, parseError: 'File does not exist' });
             continue;
+          }
+
+          // Check if --only-modified option is enabled and file is unmodified locally
+          if (options.onlyModified) {
+            const stateKey = path.relative(workflowsDir, file).replace(/\\/g, '/');
+            const entry = syncState.workflows[stateKey];
+            try {
+              const content = fs.readFileSync(file, 'utf-8');
+              const isModified = !entry || entry.contentHash !== calculateHash(content);
+              if (!isModified) {
+                parsedWorkflows.push({
+                  file,
+                  relativePath,
+                  isSkipped: true,
+                  skipReason: 'unmodified locally'
+                });
+                continue;
+              }
+            } catch (err) {
+              // Let it be handled by standard parser
+            }
           }
 
           // Check for inline ignore comments

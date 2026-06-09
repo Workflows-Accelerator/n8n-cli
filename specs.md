@@ -172,9 +172,11 @@ n8ncli diff <file> [--semantic]
 
 ### `n8ncli validate`
 ```bash
-n8ncli validate [files...]
+n8ncli validate [files...] [--lint] [--only-modified]
 ```
 - Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `2` on validation failure.
+- **`--lint`**: Runs standards style checks alongside schema validation.
+- **`--only-modified`**: Only validates workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
 
 ### `n8ncli exec`
 ```bash
@@ -217,10 +219,11 @@ n8ncli sdk [section-or-query]
 
 ### `n8ncli lint`
 ```bash
-n8ncli lint [--fix]
+n8ncli lint [--fix] [--only-modified]
 ```
 - Validates local workflow style standards against `n8n-standards.json`.
 - Automatically corrects duplicate node name formatting and expression connections when `--fix` is passed.
+- **`--only-modified`**: Only runs lint checks on workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
 
 ### `n8ncli standards`
 - `n8ncli standards validate`: Validates syntax, structure, and constraints of `n8n-standards.json`.

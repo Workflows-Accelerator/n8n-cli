@@ -155,7 +155,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli init\`: Initialize workspace config (creates \`n8n/config/n8n-cli.json\`).
 - \`n8ncli projects\`: List accessible projects.
 - \`n8ncli folders\`: List folders under the project.
-- \`n8ncli lint [--fix]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping.
+- \`n8ncli lint [--fix] [--only-modified]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files).
 
 ### Syncing
 - \`n8ncli pull [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata, or simulate the pull without writing to disk.
@@ -164,7 +164,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli diff <file> [--semantic]\`: Show line diff of a local file against remote (use \`--semantic\` to ignore node coordinate/position differences).
 
 ### Verification & Testing
-- \`n8ncli validate [files...] [--lint]\`: Validate syntax, schema, and node versions (and optionally standards style checks).
+- \`n8ncli validate [files...] [--lint] [--only-modified]\`: Validate syntax, schema, and node versions (and optionally standards style checks, optionally restricted to modified files).
 - \`n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]\`: Execute workflow.
 - \`n8ncli test <file-or-id> [--pin-data <file>]\`: Test run with mock pin data.
 - \`n8ncli execution <file-or-id> <execution-id> [--include-data]\`: Inspect execution details.

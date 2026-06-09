@@ -26,6 +26,7 @@ export function lintCommand(program: Command) {
     .command('lint')
     .description('Enforce n8n workflow conventions and naming standards')
     .option('--fix', 'auto-fix naming conventions and suffixes')
+    .option('--only-modified', 'only lint files that have local modifications', false)
     .action(async (options) => {
       try {
         const repoRoot = findRepoRoot();
@@ -41,6 +42,7 @@ export function lintCommand(program: Command) {
         convertLocalJsonWorkflows(workflowsDir);
 
         const standards = loadStandards(repoRoot);
+        const syncState = loadSyncState(repoRoot, localDir);
         const files = glob.sync('**/*.workflow.ts', { cwd: workflowsDir });
         
         let overallSuccess = true;
@@ -51,6 +53,24 @@ export function lintCommand(program: Command) {
           const fullPath = path.join(workflowsDir, file);
 
           if (!fs.existsSync(fullPath)) continue;
+
+          // Check if --only-modified option is enabled and file is unmodified locally
+          const stateKey = file.replace(/\\/g, '/');
+          const entry = syncState.workflows[stateKey];
+          if (options.onlyModified) {
+            try {
+              const code = fs.readFileSync(fullPath, 'utf-8');
+              const isModified = !entry || entry.contentHash !== calculateHash(code);
+              if (!isModified) {
+                if (!output.getJsonMode()) {
+                  output.log(`[LINT-PASS] ${relativePath} (skipped: unmodified locally)`);
+                }
+                continue;
+              }
+            } catch (err) {
+              // Let it be handled by standard parser/reader below
+            }
+          }
 
           try {
             const code = fs.readFileSync(fullPath, 'utf-8');

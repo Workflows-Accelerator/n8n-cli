@@ -154,18 +154,23 @@ export function pushCommand(program: Command) {
             }
 
             try {
-              const standards = loadStandards(repoRoot);
-              const lintRes = validateWorkflowAgainstStandards(
-                workflowJson,
-                standards,
-                path.join(localDir, 'workflows', relPath).replace(/\\/g, '/')
-              );
-              if (lintRes.errors.length > 0) {
-                output.error(`Lint standards violations for local file '${relPath}':`);
-                for (const err of lintRes.errors) {
-                  output.error(`  - ${err}`);
+              const entry = syncState.workflows[relPath];
+              const isModified = !entry || entry.contentHash !== localHashes[relPath];
+
+              if (isModified) {
+                const standards = loadStandards(repoRoot);
+                const lintRes = validateWorkflowAgainstStandards(
+                  workflowJson,
+                  standards,
+                  path.join(localDir, 'workflows', relPath).replace(/\\/g, '/')
+                );
+                if (lintRes.errors.length > 0) {
+                  output.error(`Lint standards violations for local file '${relPath}':`);
+                  for (const err of lintRes.errors) {
+                    output.error(`  - ${err}`);
+                  }
+                  localValidationFailed = true;
                 }
-                localValidationFailed = true;
               }
             } catch (err) {
               output.error(`Failed to run lint checks for local file '${relPath}': ${err instanceof Error ? err.message : String(err)}`);
