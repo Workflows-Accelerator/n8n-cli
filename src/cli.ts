@@ -1,4 +1,7 @@
 import { Command } from 'commander';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { setVerbose, setJsonMode } from './output.js';
 import { initCommand } from './commands/init.js';
 import { projectsCommand } from './commands/projects.js';
@@ -20,12 +23,15 @@ import { importSkillCommand } from './commands/import-skill.js';
 import { lintCommand } from './commands/lint.js';
 import { standardsCommand } from './commands/standards.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8'));
+
 const program = new Command();
 
 program
   .name('n8ncli')
   .description('AI-First n8n Workflow CLI')
-  .version('1.0.0')
+  .version(pkg.version)
   .option('--verbose', 'enable verbose logging', false)
   .option('--json', 'output structured JSON for program integration', false)
   .option('--env <name>', 'specify environment name')
