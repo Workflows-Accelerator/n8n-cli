@@ -65,7 +65,7 @@ This file tracks improvements, features, and fixes for `n8n-cli`.
 - [ ] **16. Support Multi-Project & Multi-Environment References**
   - *Problem:* References/contexts are currently single-environment/folder.
   - *Fix:* Allow reference resolution from multiple directories, repositories, or environments.
-- [ ] **17. Remote-Pulled Standards Violations**
+- [x] **17. Remote-Pulled Standards Violations**
   - *Problem:* Remote files pulled down can immediately violate standards, putting the agent in a catch-22.
   - *Fix:* Skip linter validation on files not modified locally, or warn on pull instead of blocking validation.
 - [ ] **18. Debug and Resolve Node Connection Issues**
