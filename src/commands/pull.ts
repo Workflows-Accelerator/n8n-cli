@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
+import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
@@ -58,8 +59,56 @@ async function enableMcpForWorkflow(
   instanceUrl: string,
   apiKey: string,
   w: any,
-  enable: boolean
+  enable: boolean,
+  dbUrl?: string
 ) {
+  // 1. Direct database update if dbUrl is configured
+  if (dbUrl) {
+    try {
+      const pgModule = pg as any;
+      const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+      const client = new ClientClass({
+        connectionString: dbUrl,
+        ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+      });
+      await client.connect();
+      try {
+        let schema = 'public';
+        try {
+          const colsRes = await client.query(`
+            SELECT table_schema
+            FROM information_schema.columns 
+            WHERE table_name = 'workflow_entity' LIMIT 1;
+          `);
+          if (colsRes.rows.length > 0) {
+            schema = colsRes.rows[0].table_schema;
+          }
+        } catch (schemaErr) {
+          // fallback to public
+        }
+        try {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', $1) WHERE "id" = $2;`,
+            [enable ? 'true' : 'false', w.id]
+          );
+        } catch (dbErr) {
+          // Fallback for text or older column types
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" SET "settings" = CAST(jsonb_set(CAST("settings" AS jsonb), '{availableInMCP}', $1) AS text) WHERE "id" = $2;`,
+            [enable ? 'true' : 'false', w.id]
+          );
+        }
+        output.log(`  [DB UPDATE] Successfully set availableInMCP: ${enable} for workflow ID ${w.id}`);
+        return; // Success! Bypasses API/MCP updates
+      } finally {
+        await client.end();
+      }
+    } catch (dbErr) {
+      output.warn(`Failed to update availableInMCP in database for workflow '${w.name || w.id}': ${dbErr instanceof Error ? dbErr.message : String(dbErr)}. Trying REST API fallback...`);
+    }
+  }
+
+  // 2. Fallback: REST API PUT update (omits availableInMCP since n8n REST API rejects it)
   const fullWf = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
   const updatedSettings = { ...fullWf.settings, availableInMCP: enable };
   delete updatedSettings.binaryMode;
@@ -71,7 +120,6 @@ async function enableMcpForWorkflow(
 
   if (apiKey && instanceUrl) {
     try {
-      // Sanitize the body for the REST API to avoid "must NOT have additional properties" error (400 Bad Request)
       const allowedKeys = [
         'name',
         'nodes',
@@ -91,6 +139,12 @@ async function enableMcpForWorkflow(
         }
       }
 
+      // Remove availableInMCP from settings as n8n REST API PUT rejects it with 400 Bad Request
+      if (sanitizedWf.settings) {
+        sanitizedWf.settings = { ...sanitizedWf.settings };
+        delete sanitizedWf.settings.availableInMCP;
+      }
+
       const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
       const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${w.id}`, {
         method: 'PUT',
@@ -102,22 +156,32 @@ async function enableMcpForWorkflow(
       });
 
       if (res.ok) {
+        output.warn(`REST API update completed but n8n API does not support settings.availableInMCP. Please manually enable MCP access for '${w.name || w.id}' in n8n UI.`);
         return;
       }
-      output.warn(`REST API update for workflow '${w.name || w.id}' returned status ${res.status}: ${res.statusText}. Falling back to MCP...`);
+      const errorText = await res.text();
+      output.warn(`REST API update for workflow '${w.name || w.id}' returned status ${res.status}: ${res.statusText}. Error: ${errorText}. Falling back to MCP...`);
     } catch (apiErr) {
       output.warn(`REST API update for workflow '${w.name || w.id}' failed: ${apiErr instanceof Error ? apiErr.message : String(apiErr)}. Falling back to MCP...`);
     }
   }
 
-  const tsCode = generateWorkflowCode(updatedWf);
+  // 3. Fallback: Warn user to enable it manually and do a schema-compliant noop update via MCP
+  output.warn(`Warning: Direct database connection is not available or failed. Cannot programmatically toggle availableInMCP to ${enable} for workflow '${w.name || w.id}'.`);
+  output.warn(`Please enable "MCP access" manually in the n8n UI for this workflow, or configure N8N_DB_URL.`);
 
-  await mcp.callTool('update_workflow', {
-    workflowId: w.id,
-    code: tsCode,
-    name: w.name,
-    operations: [],
-  });
+  try {
+    await mcp.callTool('update_workflow', {
+      workflowId: w.id,
+      operations: [
+        {
+          type: 'setWorkflowMetadata',
+        }
+      ]
+    });
+  } catch (mcpErr) {
+    output.warn(`MCP fallback update failed: ${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}`);
+  }
 }
 
 async function temporarilyEnableMcp(
@@ -127,7 +191,8 @@ async function temporarilyEnableMcp(
   projectId: string,
   folderId?: string,
   folderPaths: Record<string, string> = {},
-  folderCache: Record<string, string | null> = {}
+  folderCache: Record<string, string | null> = {},
+  dbUrl?: string
 ): Promise<Record<string, boolean>> {
   const headers = {
     'X-N8N-API-KEY': apiKey,
@@ -156,7 +221,7 @@ async function temporarilyEnableMcp(
         if (!originalVal) {
           output.log(`Enabling MCP access permanently for in-scope workflow '${w.name}'...`);
           try {
-            await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true);
+            await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true, dbUrl);
           } catch (e) {
             output.error(`Failed to enable MCP for workflow '${w.name}': ${e instanceof Error ? e.message : String(e)}`);
           }
@@ -169,7 +234,7 @@ async function temporarilyEnableMcp(
       if (!originalVal) {
         output.log(`Temporarily enabling MCP access for unknown scope workflow '${w.name}'...`);
         try {
-          await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true);
+          await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true, dbUrl);
           
           const fullWf = await getWorkflowDetails(mcp, instanceUrl, apiKey, w.id);
           const resolvedFolderId = fullWf.parentFolderId || fullWf.folderId || null;
@@ -194,13 +259,14 @@ async function restoreMcpSettings(
   projectId: string,
   mcpCache: Record<string, boolean>,
   folderId?: string,
-  folderPaths: Record<string, string> = {}
+  folderPaths: Record<string, string> = {},
+  dbUrl?: string
 ) {
   for (const [wId, originalVal] of Object.entries(mcpCache)) {
     if (originalVal === false) {
       output.log(`Restoring MCP access to false for workflow ID: ${wId}...`);
       try {
-        await enableMcpForWorkflow(mcp, instanceUrl, apiKey, { id: wId }, false);
+        await enableMcpForWorkflow(mcp, instanceUrl, apiKey, { id: wId }, false, dbUrl);
       } catch (err) {
         output.error(`Failed to restore MCP for workflow ID ${wId}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -350,9 +416,9 @@ export function pullCommand(program: Command) {
           const sigHandler = async () => {
             output.log('\nProcess interrupted. Restoring MCP settings...');
             try {
-              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths);
+              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
               if (refProjId && !isIndependentRefEnv && refProjId !== projectId) {
-                await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache);
+                await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache, undefined, undefined, dbUrl);
               }
             } catch (e) {}
             process.exit(1);
@@ -378,7 +444,7 @@ export function pullCommand(program: Command) {
             }
 
             // 1. Temporarily enable MCP for the main project
-            mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache);
+            mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache, dbUrl);
 
             // 2. Temporarily enable MCP for the reference project if it is configured, in the same environment, and different
             if (refProjId && !isIndependentRefEnv) {
@@ -389,7 +455,7 @@ export function pullCommand(program: Command) {
                   const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
                   refFolderPaths = buildFolderPaths(folders, refFolderId);
                 } catch (e) {}
-                refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId, refFolderId, refFolderPaths, folderCache);
+                refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId, refFolderId, refFolderPaths, folderCache, dbUrl);
               } else {
                 refMcpCache = mainMcpCache;
               }
@@ -657,7 +723,7 @@ export function pullCommand(program: Command) {
 
             output.log('Restoring MCP access settings for the project(s)...');
             try {
-              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths);
+              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
             } catch (err) {
               output.error(`Failed to restore main project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -671,7 +737,7 @@ export function pullCommand(program: Command) {
                 } catch (e) {
                   // ignore
                 }
-                await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache, refFolderId, refFolderPaths);
+                await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache, refFolderId, refFolderPaths, dbUrl);
               } catch (err) {
                 output.error(`Failed to restore references project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
               }

@@ -480,72 +480,107 @@ export function pushCommand(program: Command) {
             const oldFolderId = oldEntry ? oldEntry.folderId : undefined;
             const isMove = oldFolderId !== undefined && oldFolderId !== newFolderId;
 
-            if (isMove) {
-              output.log(`Moving remote workflow: ${rename.name} (from folder ${oldFolderId || 'root'} to ${newFolderId || 'root'})...`);
-              try {
-                const code = localCodes[rename.newPath];
-                if (apiKey && instanceUrl) {
-                  const res = await fetch(`${instanceUrl}/api/v1/workflows/${rename.id}`, {
-                    method: 'PUT',
-                    headers: {
-                      'X-N8N-API-KEY': apiKey,
-                      'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
-                      parentFolderId: newFolderId || null,
-                    }),
-                  });
-                  if (!res.ok) {
-                    throw new Error(`Failed to update folder relationship via REST API: ${res.statusText}`);
+            try {
+              const code = localCodes[rename.newPath];
+              if (apiKey && instanceUrl) {
+                const builder = parseWorkflowCodeToBuilder(code);
+                const workflowJson = builder.toJSON();
+
+                const allowedKeys = [
+                  'name',
+                  'nodes',
+                  'connections',
+                  'settings',
+                  'staticData',
+                  'meta',
+                  'pinData'
+                ];
+                const sanitizedWf: Record<string, any> = {};
+                for (const key of allowedKeys) {
+                  if (workflowJson[key] !== undefined) {
+                    sanitizedWf[key] = workflowJson[key];
                   }
-                  
-                  await mcp.callTool('update_workflow', {
-                    workflowId: rename.id,
-                    code,
-                    name: rename.name,
-                    operations: [],
-                  });
-
-                  delete syncState.workflows[rename.oldPath];
-                  syncState.workflows[rename.newPath] = {
-                    id: rename.id,
-                    name: rename.name,
-                    localPath: rename.newPath,
-                    contentHash: localHashes[rename.newPath],
-                    remoteUpdatedAt: new Date().toISOString(),
-                    folderId: newFolderId,
-                  };
-                  output.log(`  [MOVED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
-                } else {
-                  throw new Error('REST API key or instance URL is missing. Cannot perform workflow move.');
                 }
-              } catch (err) {
-                output.error(`Failed to move workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
-              }
-            } else {
-              output.log(`Renaming remote workflow: ${rename.name} (${rename.id})...`);
-              try {
-                const code = localCodes[rename.newPath];
-                await mcp.callTool('update_workflow', {
-                  workflowId: rename.id,
-                  code,
-                  name: rename.name,
-                  operations: [],
-                });
+                
+                // Remove availableInMCP from settings as n8n REST API rejects it
+                if (sanitizedWf.settings) {
+                  sanitizedWf.settings = { ...sanitizedWf.settings };
+                  delete sanitizedWf.settings.availableInMCP;
+                  delete sanitizedWf.settings.binaryMode;
+                }
 
+                // Set parentFolderId relationship
+                sanitizedWf.parentFolderId = isMove ? (newFolderId || null) : (oldFolderId || null);
+
+                const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+                const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${rename.id}`, {
+                  method: 'PUT',
+                  headers: {
+                    'X-N8N-API-KEY': apiKey,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(sanitizedWf),
+                });
+                if (!res.ok) {
+                  const errorText = await res.text();
+                  throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
+                }
+
+                // If dbUrl and availableInMCP is true, set it in DB
+                if (dbUrl && workflowJson.settings?.availableInMCP) {
+                  try {
+                    const pgModule = pg as any;
+                    const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+                    const client = new ClientClass({
+                      connectionString: dbUrl,
+                      ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+                    });
+                    await client.connect();
+                    try {
+                      let schema = 'public';
+                      try {
+                        const colsRes = await client.query(`
+                          SELECT table_schema
+                          FROM information_schema.columns 
+                          WHERE table_name = 'workflow_entity' LIMIT 1;
+                        `);
+                        if (colsRes.rows.length > 0) {
+                          schema = colsRes.rows[0].table_schema;
+                        }
+                      } catch (schemaErr) {
+                        // fallback to public
+                      }
+                      await client.query(
+                        `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
+                        [rename.id]
+                      );
+                    } finally {
+                      await client.end();
+                    }
+                  } catch (e) {}
+                }
+
+                // Delete old path and save new path in syncState
                 delete syncState.workflows[rename.oldPath];
                 syncState.workflows[rename.newPath] = {
-                  ...oldEntry,
+                  id: rename.id,
                   name: rename.name,
                   localPath: rename.newPath,
                   contentHash: localHashes[rename.newPath],
                   remoteUpdatedAt: new Date().toISOString(),
-                  folderId: oldFolderId,
+                  folderId: isMove ? newFolderId : oldFolderId,
                 };
-                output.log(`  [RENAMED] ${rename.oldPath} -> ${rename.newPath}`);
-              } catch (err) {
-                output.error(`Failed to rename workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
+
+                if (isMove) {
+                  output.log(`  [MOVED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
+                } else {
+                  output.log(`  [RENAMED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
+                }
+              } else {
+                throw new Error('REST API key or instance URL is missing. Cannot perform workflow update.');
               }
+            } catch (err) {
+              output.error(`Failed to update/move workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
             }
           }
 
@@ -627,12 +662,83 @@ export function pushCommand(program: Command) {
               }
 
               const code = localCodes[relPath];
-              await mcp.callTool('update_workflow', {
-                workflowId: entry.id,
-                code,
-                name,
-                operations: [],
-              });
+              if (apiKey && instanceUrl) {
+                const builder = parseWorkflowCodeToBuilder(code);
+                const workflowJson = builder.toJSON();
+
+                const allowedKeys = [
+                  'name',
+                  'nodes',
+                  'connections',
+                  'settings',
+                  'staticData',
+                  'meta',
+                  'pinData'
+                ];
+                const sanitizedWf: Record<string, any> = {};
+                for (const key of allowedKeys) {
+                  if (workflowJson[key] !== undefined) {
+                    sanitizedWf[key] = workflowJson[key];
+                  }
+                }
+                
+                // Remove availableInMCP from settings as n8n REST API rejects it
+                if (sanitizedWf.settings) {
+                  sanitizedWf.settings = { ...sanitizedWf.settings };
+                  delete sanitizedWf.settings.availableInMCP;
+                  delete sanitizedWf.settings.binaryMode;
+                }
+
+                const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+                const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${entry.id}`, {
+                  method: 'PUT',
+                  headers: {
+                    'X-N8N-API-KEY': apiKey,
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify(sanitizedWf),
+                });
+                if (!res.ok) {
+                  const errorText = await res.text();
+                  throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
+                }
+
+                // If dbUrl and availableInMCP is true, set it in DB
+                if (dbUrl && workflowJson.settings?.availableInMCP) {
+                  try {
+                    const pgModule = pg as any;
+                    const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+                    const client = new ClientClass({
+                      connectionString: dbUrl,
+                      ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+                    });
+                    await client.connect();
+                    try {
+                      let schema = 'public';
+                      try {
+                        const colsRes = await client.query(`
+                          SELECT table_schema
+                          FROM information_schema.columns 
+                          WHERE table_name = 'workflow_entity' LIMIT 1;
+                        `);
+                        if (colsRes.rows.length > 0) {
+                          schema = colsRes.rows[0].table_schema;
+                        }
+                      } catch (schemaErr) {
+                        // fallback to public
+                      }
+                      await client.query(
+                        `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
+                        [entry.id]
+                      );
+                    } finally {
+                      await client.end();
+                    }
+                  } catch (e) {}
+                }
+              } else {
+                throw new Error('REST API key or instance URL is missing. Cannot perform workflow update.');
+              }
 
               let finalRelPath = relPath;
               if (entry.name !== name) {
