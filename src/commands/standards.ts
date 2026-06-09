@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { findRepoRoot } from '../config.js';
-import { validateStandardsJson, DEFAULT_STANDARDS, getStandardsPath } from '../lint-engine.js';
+import { validateStandardsJson, DEFAULT_STANDARDS, getStandardsPath, addAllowedWords } from '../lint-engine.js';
 import * as output from '../output.js';
 
 export function standardsCommand(program: Command) {
@@ -38,6 +38,24 @@ export function standardsCommand(program: Command) {
           output.error(`  - ${err}`);
         }
         process.exit(2);
+      } catch (err) {
+        output.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+    });
+
+  cmd
+    .command('allow <words...>')
+    .description('Add one or more allowed words to the language standards config')
+    .action(async (words) => {
+      try {
+        const repoRoot = findRepoRoot();
+        if (!repoRoot) {
+          throw new Error('Project must be initialized. Run `n8ncli init` first.');
+        }
+
+        addAllowedWords(repoRoot, words);
+        output.log(`Successfully allowed words: ${words.join(', ')}`);
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);

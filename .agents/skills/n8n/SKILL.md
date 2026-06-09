@@ -1,6 +1,6 @@
 ---
 name: n8ncli
-version: 1.0.5
+version: 1.0.6
 description: |
   Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
   Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
@@ -118,6 +118,53 @@ Follow these steps when creating, editing, or managing workflows:
 
 ---
 
+## ⚠️ Key Caveats & Gotchas
+
+- **File Renaming on Pull:** The `pull` command uses each workflow's remote display name as its filename (e.g., `My Workflow.workflow.ts`). Local files using kebab-case or other naming structures will be renamed on pull. Avoid relying on custom local filenames.
+- **Node Notes & notesInFlow Placement:** In the TypeScript SDK, node-level descriptions/notes and the `notesInFlow` flag must be placed inside the `.config()` block of the node, **not** as top-level node arguments or inside parameters. See the example below.
+
+---
+
+## 💡 Code Examples
+
+### 1. Minimal Valid Workflow
+```typescript
+import { workflow, node } from '@n8n/workflow-sdk';
+
+export default workflow('My New Workflow')
+  .description('This workflow performs a daily backup check.')
+  .addNode(
+    node('Schedule Trigger', 'n8n-nodes-base.scheduleTrigger')
+      .position(100, 200)
+  )
+  .addNode(
+    node('Log Status', 'n8n-nodes-base.code')
+      .position(300, 200)
+      .config({
+        notes: 'Processes the schedule event and logs a status message.',
+        notesInFlow: true
+      })
+      .parameters({
+        jsCode: 'return { json: { status: "OK", time: new Date() } };'
+      })
+  )
+  .connect('Schedule Trigger', 'Log Status');
+```
+
+### 2. Webhook Trigger Naming Convention
+Webhook triggers MUST follow the naming convention `[METHOD] /[endpoint]`:
+```typescript
+node('POST /submit-lead', 'n8n-nodes-base.webhook')
+  .position(100, 200)
+  .parameters({
+    httpMethod: 'POST',
+    path: 'submit-lead',
+    responseMode: 'onReceived'
+  })
+```
+
+---
+
 ## Project Standards & Naming Conventions
 
 This project enforces strict style standards configured in `n8n-standards.json`. AI agents MUST adhere to these rules when creating or modifying workflows:
@@ -126,7 +173,7 @@ This project enforces strict style standards configured in `n8n-standards.json`.
 - **Workflows:** Workflow names must match: `^[A-Z][a-zA-Z0-9\s()-]*$`. (Workflow names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, or parentheses.)
 - **Workflow Naming Restrictions:** Default/banned names like "My workflow", "New workflow", "Workflow", "Untitled workflow" (and numbered variations like "My workflow 1") are strictly forbidden.
 - **Workflow Description:** Every workflow MUST have a non-empty description explaining its purpose.
-- **Nodes:** Node names must match: `^[A-Z][a-zA-Z0-9\s()\-:]*$`. (Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, or colons.)
+- **Nodes:** Node names must match: `^[A-Z][a-zA-Z0-9\s()\-:/]*$`. (Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, colons, or forward slashes.)
   - *Exception:* Default node names (like "Set", "HTTP Request") are tolerated if they are the only nodes of their type in the workflow.
 - **Duplicate Node Naming:** Must follow the `parenthesis` numbering format (e.g. "My Node (1)").
 - **Node Notes:** Notes are required on the following node types: `n8n-nodes-base.code`.

@@ -248,6 +248,12 @@ export function initCommand(program: Command) {
       if (!gitignoreContent.includes(`${localDir}/config/sync-state.json`)) {
         gitignoreLines.push(`${localDir}/config/sync-state.json`);
       }
+      if (!gitignoreContent.includes(`${localDir}/config/unconfigured-credentials.json`)) {
+        gitignoreLines.push(`${localDir}/config/unconfigured-credentials.json`);
+      }
+      if (!gitignoreContent.includes(`${localDir}/config/workflow-folders.json`)) {
+        gitignoreLines.push(`${localDir}/config/workflow-folders.json`);
+      }
       if (!gitignoreContent.includes(`${localDir}/references/`)) {
         gitignoreLines.push(`${localDir}/references/`);
       }
@@ -397,7 +403,32 @@ export function initCommand(program: Command) {
         output.warn(`Could not initialize n8n-standards.json: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      output.log('Initialization complete! You can now run `n8ncli pull` to sync workflows.');
+      output.log('\nGenerated config files:');
+      output.log(`  - ${localDir}/config/n8n-cli.json (Repository config, can be committed)`);
+      output.log(`  - ${localDir}/config/n8n-standards.json (Standards & style configuration, should be committed)`);
+      output.log(`  - ${localDir}/config/sync-state.json (Local environment sync-state, IGNORED)`);
+      output.log(`  - ${localDir}/config/workflow-folders.json (Local folder cache, IGNORED)`);
+      output.log(`  - ${localDir}/config/unconfigured-credentials.json (Unconfigured credentials tracking, IGNORED)`);
+
+      output.log('\nInitialization complete!');
+
+      let shouldPull = false;
+      if (options.interactive) {
+        const pullAnswer = await askQuestion('\nWould you like to pull workflows from your n8n instance now? (y/n) [y]', 'y');
+        shouldPull = pullAnswer.toLowerCase() === 'y';
+      }
+
+      if (shouldPull) {
+        output.log('\nRunning pull to sync workflows...');
+        const pullCmd = program.commands.find(c => c.name() === 'pull');
+        if (pullCmd) {
+          await program.parseAsync([process.argv[0], process.argv[1], 'pull']);
+        } else {
+          output.error('Could not find pull command to execute.');
+        }
+      } else {
+        output.log('Next step: run `n8ncli pull` to sync workflows.');
+      }
     });
 }
 

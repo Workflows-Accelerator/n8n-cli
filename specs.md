@@ -212,6 +212,18 @@ n8ncli sdk [section]
 ```
 - Prints n8n Workflow SDK documentation (`patterns`, `expressions`, `functions`, `guidelines`, `design`, `all`).
 
+### `n8ncli lint`
+```bash
+n8ncli lint [--fix]
+```
+- Validates local workflow style standards against `n8n-standards.json`.
+- Automatically corrects duplicate node name formatting and expression connections when `--fix` is passed.
+
+### `n8ncli standards`
+- `n8ncli standards validate`: Validates syntax, structure, and constraints of `n8n-standards.json`.
+- `n8ncli standards init [--force]`: Generates a standard default `n8n-standards.json` file.
+- `n8ncli standards allow <words...>`: Appends one or more words to the allowed words configuration in `n8n-standards.json`.
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies

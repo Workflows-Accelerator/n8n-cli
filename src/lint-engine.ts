@@ -68,6 +68,7 @@ export interface StandardsConfig {
     expected?: string;
     checkFields?: string[];
     allowedWords?: string[];
+    _comment_allowedWords?: string;
     errorMessage?: string;
   };
   ignore?: {
@@ -108,8 +109,8 @@ export const DEFAULT_STANDARDS: StandardsConfig = {
     naming: {
       tolerateDefaultNames: true,
       duplicateSuffixFormat: 'parenthesis',
-      regex: '^[A-Z][a-zA-Z0-9\\s()\\-:]*$',
-      errorMessage: 'Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, or colons.'
+      regex: '^[A-Z][a-zA-Z0-9\\s()\\-:/]*$',
+      errorMessage: 'Node names must be in Title Case (starting with uppercase) and can contain letters, numbers, spaces, dashes, parentheses, colons, or forward slashes.'
     },
     notes: {
       requireNotes: false,
@@ -137,7 +138,13 @@ export const DEFAULT_STANDARDS: StandardsConfig = {
     enabled: true,
     expected: 'en',
     checkFields: ['workflow.description', 'node.notes', 'node.name', 'variable.name'],
-    allowedWords: [],
+    allowedWords: [
+      'PDF', 'SMS', 'API', 'Gemini', 'Supabase', 'Twilio', 'Gotenberg', 'n8n', 'JSON', 'URL',
+      'HTTP', 'HTTPS', 'REST', 'SQL', 'DB', 'OAuth', 'Webhook', 'CRM', 'AI', 'LLM', 'Slack',
+      'Discord', 'Telegram', 'WhatsApp', 'Google', 'GitHub', 'Stripe', 'PayPal', 'HubSpot',
+      'Notion', 'Airtable', 'Asana', 'Jira', 'Trello', 'SendGrid', 'Mailgun'
+    ],
+    _comment_allowedWords: 'Add custom words here that are specific to your workflows to prevent spelling warnings.',
     errorMessage: 'Text, names, and variables must be written in English.'
   },
   ignore: {
@@ -167,7 +174,8 @@ const DEFAULT_ALLOWED_TECHNICAL_WORDS = new Set([
   'email', 'slack', 'gmail', 'github', 'gitlab', 'hubspot', 'trello', 'asana', 
   'jira', 'notion', 'airtable', 'stripe', 'paypal', 'mailgun', 'sendgrid', 
   'twilio', 'telegram', 'discord', 'whatsapp', 'google', 'drive', 'sheets', 
-  'calendar', 'docs', 'forms', 'meet', 'chat', 'fit', 'photos', 'keep'
+  'calendar', 'docs', 'forms', 'meet', 'chat', 'fit', 'photos', 'keep',
+  'pdf', 'sms', 'gemini', 'supabase', 'gotenberg'
 ]);
 
 export function getStandardsPath(repoRoot: string): string {
@@ -214,6 +222,39 @@ export function saveDefaultStandards(repoRoot: string) {
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.writeFileSync(p, JSON.stringify(DEFAULT_STANDARDS, null, 2), 'utf-8');
+}
+
+export function addAllowedWords(repoRoot: string, words: string[]) {
+  const p = getStandardsPath(repoRoot);
+  let config: StandardsConfig;
+  if (fs.existsSync(p)) {
+    try {
+      config = JSON.parse(fs.readFileSync(p, 'utf-8')) as StandardsConfig;
+    } catch (e) {
+      config = { ...DEFAULT_STANDARDS };
+    }
+  } else {
+    config = { ...DEFAULT_STANDARDS };
+  }
+
+  if (!config.language) {
+    config.language = {};
+  }
+  if (!config.language.allowedWords) {
+    config.language.allowedWords = [];
+  }
+
+  for (const word of words) {
+    if (!config.language.allowedWords.includes(word)) {
+      config.language.allowedWords.push(word);
+    }
+  }
+
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(p, JSON.stringify(config, null, 2), 'utf-8');
 }
 
 export function checkWordSpelling(word: string): boolean {
@@ -587,7 +628,7 @@ export function validateWorkflowAgainstStandards(
     if (checkFields.includes('workflow.description') && desc) {
       const spellResult = checkSentenceSpelling(desc, allowedWords, ignoredWords);
       if (!spellResult.ok) {
-        errors.push(`Workflow description contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+        errors.push(`Workflow description contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
       }
     }
   }
@@ -635,7 +676,7 @@ export function validateWorkflowAgainstStandards(
       if (standards.language?.enabled && standards.language.checkFields?.includes('node.notes') && content) {
         const spellResult = checkSentenceSpelling(content, allowedWords, ignoredWords);
         if (!spellResult.ok) {
-          errors.push(`Sticky Note "${nodeName}" content contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+          errors.push(`Sticky Note "${nodeName}" content contains spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
       
@@ -711,7 +752,7 @@ export function validateWorkflowAgainstStandards(
       if (requireNotes || requireNotesForTypes.includes(nodeType)) {
         if (!hasNote) {
           const errMessage = standards.nodes.notes?.errorMessage || `Notes are required for node: ${nodeName}`;
-          errors.push(`Node "${nodeName}" is missing a description note. ${errMessage}`);
+          errors.push(`Node "${nodeName}" is missing a description note. ${errMessage} (Note: In the TypeScript SDK, notes must be configured inside the .config({ notes: "...", notesInFlow: true }) block)`);
         }
       }
     }
@@ -730,7 +771,7 @@ export function validateWorkflowAgainstStandards(
           }
         }
         if (invalidWords.length > 0) {
-          errors.push(`Node name "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}`);
+          errors.push(`Node name "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
       
@@ -738,7 +779,7 @@ export function validateWorkflowAgainstStandards(
       if (checkFields.includes('node.notes') && hasNote && node.notes) {
         const spellResult = checkSentenceSpelling(node.notes, allowedWords, ignoredWords);
         if (!spellResult.ok) {
-          errors.push(`Node "${nodeName}" notes contain spelling or non-English words: ${spellResult.invalidWords.join(', ')}`);
+          errors.push(`Node "${nodeName}" notes contain spelling or non-English words: ${spellResult.invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
         }
       }
     }
@@ -770,7 +811,7 @@ export function validateWorkflowAgainstStandards(
             }
           }
           if (invalidWords.length > 0) {
-            errors.push(`Variable "${varName}" in node "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}`);
+            errors.push(`Variable "${varName}" in node "${nodeName}" contains spelling or non-English words: ${invalidWords.join(', ')}. (Tip: Use 'n8ncli standards allow <word>' to whitelist)`);
           }
         }
       }
