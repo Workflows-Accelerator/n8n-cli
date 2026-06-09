@@ -243,6 +243,7 @@ export function pullCommand(program: Command) {
     .option('--api-key <key>', 'override n8n REST API key')
     .option('--url <url>', 'override n8n instance URL')
     .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
+    .option('--dry-run', 'simulate pulling remote workflows without writing to disk', false)
     .action(async (options) => {
       let mainMcpCache: Record<string, boolean> = {};
       let refMcpCache: Record<string, boolean> = {};
@@ -316,7 +317,11 @@ export function pullCommand(program: Command) {
           }
         }
 
-        convertLocalJsonWorkflows(path.join(repoRoot, localDir, 'workflows'));
+        if (!options.dryRun) {
+          convertLocalJsonWorkflows(path.join(repoRoot, localDir, 'workflows'));
+        } else {
+          output.log(`(dry-run) Would convert any legacy JSON workflows in ${path.join(localDir, 'workflows')}`);
+        }
 
         projectId = config.projectId;
         folderId = config.folderId;
@@ -336,7 +341,11 @@ export function pullCommand(program: Command) {
                 newCache[w.id] = w.parentFolderId || null;
               }
               folderCache = newCache;
-              saveFolderCache(repoRoot, folderCache, localDir);
+              if (!options.dryRun) {
+                saveFolderCache(repoRoot, folderCache, localDir);
+              } else {
+                output.log(`(dry-run) Would update folder cache with ${Object.keys(folderCache).length} mappings.`);
+              }
               output.log(`Successfully updated folder cache from database with ${Object.keys(folderCache).length} mappings.`);
             } else {
               output.warn('Database query returned no workflows. Folder cache not updated.');
@@ -390,10 +399,17 @@ export function pullCommand(program: Command) {
               folderPaths = buildFolderPaths(folders, folderId);
               
               // Create all directories (even empty ones)
-              const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
-              fs.mkdirSync(localWorkflowsDir, { recursive: true });
-              for (const subdir of Object.values(folderPaths)) {
-                fs.mkdirSync(path.join(localWorkflowsDir, subdir), { recursive: true });
+              if (!options.dryRun) {
+                const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
+                fs.mkdirSync(localWorkflowsDir, { recursive: true });
+                for (const subdir of Object.values(folderPaths)) {
+                  fs.mkdirSync(path.join(localWorkflowsDir, subdir), { recursive: true });
+                }
+              } else {
+                output.log(`(dry-run) Would ensure local workflow directory: ${path.join(localDir, 'workflows')}`);
+                for (const subdir of Object.values(folderPaths)) {
+                  output.log(`(dry-run) Would ensure local workflow directory: ${path.join(localDir, 'workflows', subdir)}`);
+                }
               }
             } catch (err) {
               output.warn(`Failed to fetch folders or create directories: ${err instanceof Error ? err.message : String(err)}`);
@@ -499,27 +515,31 @@ export function pullCommand(program: Command) {
                 if (stateEntry && stateEntry.localPath !== relativePath) {
                   const oldFullPath = path.join(localWorkflowsDir, stateEntry.localPath);
                   if (fs.existsSync(oldFullPath)) {
-                    output.log(`  Moving local file on disk: ${stateEntry.localPath} -> ${relativePath}`);
-                    fs.mkdirSync(targetDir, { recursive: true });
-                    fs.renameSync(oldFullPath, fullPath);
+                    output.log(`  Moving local file on disk: ${stateEntry.localPath} -> ${relativePath}${options.dryRun ? ' (dry-run)' : ''}`);
+                    if (!options.dryRun) {
+                      fs.mkdirSync(targetDir, { recursive: true });
+                      fs.renameSync(oldFullPath, fullPath);
 
-                    // Clean up empty parent directories of the old file
-                    try {
-                      let dir = path.dirname(oldFullPath);
-                      while (dir !== localWorkflowsDir) {
-                        if (fs.readdirSync(dir).length === 0) {
-                          fs.rmdirSync(dir);
-                          dir = path.dirname(dir);
-                        } else {
-                          break;
+                      // Clean up empty parent directories of the old file
+                      try {
+                        let dir = path.dirname(oldFullPath);
+                        while (dir !== localWorkflowsDir) {
+                          if (fs.readdirSync(dir).length === 0) {
+                            fs.rmdirSync(dir);
+                            dir = path.dirname(dir);
+                          } else {
+                            break;
+                          }
                         }
+                      } catch (e) {
+                        // ignore
                       }
-                    } catch (e) {
-                      // ignore
                     }
                   }
                   // Remove old entry from sync state
-                  delete syncState.workflows[stateEntry.localPath];
+                  if (!options.dryRun) {
+                    delete syncState.workflows[stateEntry.localPath];
+                  }
                   stateEntry = undefined;
                 }
 
@@ -530,31 +550,35 @@ export function pullCommand(program: Command) {
 
                 if (!localExists) {
                   // Scenario A: File doesn't exist locally -> create it
-                  fs.mkdirSync(targetDir, { recursive: true });
-                  fs.writeFileSync(fullPath, tsCode, 'utf-8');
-                  
-                  syncState.workflows[relativePath] = {
-                    id: details.id,
-                    name: details.name,
-                    localPath: relativePath,
-                    contentHash: newHash,
-                    remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                    folderId: wFolderId || undefined,
-                  };
+                  if (!options.dryRun) {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                    fs.writeFileSync(fullPath, tsCode, 'utf-8');
+                    
+                    syncState.workflows[relativePath] = {
+                      id: details.id,
+                      name: details.name,
+                      localPath: relativePath,
+                      contentHash: newHash,
+                      remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
+                      folderId: wFolderId || undefined,
+                    };
+                  }
                   createdCount++;
-                  output.log(`  [CREATED] ${relativePath}`);
+                  output.log(`  [CREATED] ${relativePath}${options.dryRun ? ' (dry-run)' : ''}`);
                 } else if (localHash === newHash) {
                   // Scenario B: Hashes match -> unchanged
                   // Just update sync entry path in case it changed/moved
-                  delete syncState.workflows[stateEntry?.localPath || ''];
-                  syncState.workflows[relativePath] = {
-                    id: details.id,
-                    name: details.name,
-                    localPath: relativePath,
-                    contentHash: newHash,
-                    remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                    folderId: wFolderId || undefined,
-                  };
+                  if (!options.dryRun) {
+                    delete syncState.workflows[stateEntry?.localPath || ''];
+                    syncState.workflows[relativePath] = {
+                      id: details.id,
+                      name: details.name,
+                      localPath: relativePath,
+                      contentHash: newHash,
+                      remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
+                      folderId: wFolderId || undefined,
+                    };
+                  }
                   unchangedCount++;
                 } else {
                   // Scenario C: Hashes differ -> check if local was modified
@@ -566,20 +590,22 @@ export function pullCommand(program: Command) {
                     hasConflicts = true;
                   } else {
                     // Write file (overwrite local changes or update to latest remote)
-                    fs.mkdirSync(targetDir, { recursive: true });
-                    fs.writeFileSync(fullPath, tsCode, 'utf-8');
-                    
-                    delete syncState.workflows[stateEntry?.localPath || ''];
-                    syncState.workflows[relativePath] = {
-                      id: details.id,
-                      name: details.name,
-                      localPath: relativePath,
-                      contentHash: newHash,
-                      remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
-                      folderId: wFolderId || undefined,
-                    };
+                    if (!options.dryRun) {
+                      fs.mkdirSync(targetDir, { recursive: true });
+                      fs.writeFileSync(fullPath, tsCode, 'utf-8');
+                      
+                      delete syncState.workflows[stateEntry?.localPath || ''];
+                      syncState.workflows[relativePath] = {
+                        id: details.id,
+                        name: details.name,
+                        localPath: relativePath,
+                        contentHash: newHash,
+                        remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
+                        folderId: wFolderId || undefined,
+                      };
+                    }
                     updatedCount++;
-                    output.log(`  [UPDATED] ${relativePath}`);
+                    output.log(`  [UPDATED] ${relativePath}${options.dryRun ? ' (dry-run)' : ''}`);
                   }
                 }
               } catch (err) {
@@ -593,24 +619,30 @@ export function pullCommand(program: Command) {
               if (!activeWorkflowIds.has(entry.id)) {
                 const fullPath = path.join(repoRoot!, localDir, 'workflows', relPath);
                 if (fs.existsSync(fullPath)) {
-                  fs.unlinkSync(fullPath);
-                  output.log(`  [CLEANUP] Deleted local file for out-of-scope/deleted workflow: ${relPath}`);
+                  if (!options.dryRun) {
+                    fs.unlinkSync(fullPath);
+                  }
+                  output.log(`  [CLEANUP] Deleted local file for out-of-scope/deleted workflow: ${relPath}${options.dryRun ? ' (dry-run)' : ''}`);
                   
                   // Clean up empty parent directories
-                  let dir = path.dirname(fullPath);
-                  const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
-                  while (dir !== localWorkflowsDir) {
-                    const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
-                    const isRemoteFolder = Object.values(folderPaths).includes(relDir);
-                    if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
-                      fs.rmdirSync(dir);
-                      dir = path.dirname(dir);
-                    } else {
-                      break;
+                  if (!options.dryRun) {
+                    let dir = path.dirname(fullPath);
+                    const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
+                    while (dir !== localWorkflowsDir) {
+                      const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
+                      const isRemoteFolder = Object.values(folderPaths).includes(relDir);
+                      if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                        fs.rmdirSync(dir);
+                        dir = path.dirname(dir);
+                      } else {
+                        break;
+                      }
                     }
                   }
                 }
-                delete syncState.workflows[relPath];
+                if (!options.dryRun) {
+                  delete syncState.workflows[relPath];
+                }
               }
             }
 
@@ -640,20 +672,24 @@ export function pullCommand(program: Command) {
                     const match = content.match(/workflow\(\s*['"]([^'"]+)['"]/);
                     const id = match ? match[1] : null;
                     if (!id || !activeWorkflowIds.has(id)) {
-                      fs.unlinkSync(fullPath);
+                      if (!options.dryRun) {
+                        fs.unlinkSync(fullPath);
+                      }
                       const rel = path.relative(localWorkflowsDir, fullPath);
-                      output.log(`  [HARD CLEANUP] Deleted local file: ${rel}`);
+                      output.log(`  [HARD CLEANUP] Deleted local file: ${rel}${options.dryRun ? ' (dry-run)' : ''}`);
 
                       // Clean up empty parent directories
-                      let dir = path.dirname(fullPath);
-                      while (dir !== localWorkflowsDir) {
-                        const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
-                        const isRemoteFolder = Object.values(folderPaths).includes(relDir);
-                        if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
-                          fs.rmdirSync(dir);
-                          dir = path.dirname(dir);
-                        } else {
-                          break;
+                      if (!options.dryRun) {
+                        let dir = path.dirname(fullPath);
+                        while (dir !== localWorkflowsDir) {
+                          const relDir = path.relative(localWorkflowsDir, dir).replace(/\\/g, '/');
+                          const isRemoteFolder = Object.values(folderPaths).includes(relDir);
+                          if (!isRemoteFolder && fs.existsSync(dir) && fs.readdirSync(dir).length === 0) {
+                            fs.rmdirSync(dir);
+                            dir = path.dirname(dir);
+                          } else {
+                            break;
+                          }
                         }
                       }
                     }
@@ -665,13 +701,17 @@ export function pullCommand(program: Command) {
             }
 
             // Save sync state
-            syncState.lastSync = new Date().toISOString();
-            syncState.folders = Object.keys(folderPaths);
-            saveSyncState(repoRoot!, syncState, localDir);
+            if (!options.dryRun) {
+              syncState.lastSync = new Date().toISOString();
+              syncState.folders = Object.keys(folderPaths);
+              saveSyncState(repoRoot!, syncState, localDir);
+            } else {
+              output.log(`(dry-run) Would save sync state with lastSync and folders updated.`);
+            }
 
             // Pull references (same environment case)
             if (!options.skipReferences && refProjId && !isIndependentRefEnv) {
-              await pullReferences(mcp, config, repoRoot!, folderCache, instanceUrl, apiKey);
+              await pullReferences(mcp, config, repoRoot!, folderCache, instanceUrl, apiKey, options.dryRun);
             }
           } finally {
             process.off('SIGINT', sigHandler);
@@ -712,7 +752,7 @@ export function pullCommand(program: Command) {
                   refFolderPaths = buildFolderPaths(folders, refFolderId);
                 } catch (e) {}
                 refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, folderCache);
-                await pullReferences(refMcp, config, repoRoot!, folderCache, refInstanceUrl, refApiKey);
+                await pullReferences(refMcp, config, repoRoot!, folderCache, refInstanceUrl, refApiKey, options.dryRun);
               } finally {
                 output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
                 try {

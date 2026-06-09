@@ -134,7 +134,7 @@ n8ncli folders --project-id <id> [--query <q>] [--limit <n>]
 
 ### `n8ncli pull`
 ```bash
-n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>]
+n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--dry-run]
 ```
 - Pulls all workflows matching the configured `projectId`/`folderId`.
 - Converts JSON definition to TypeScript using `@n8n/workflow-sdk`'s `generateWorkflowCode`.
@@ -142,6 +142,7 @@ n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <
 - **Empty Folder Retention Safety**: Retains empty directories on disk if they exist on the remote instance.
 - **Hard Sync (`--hard`)**: Deletes untracked and out-of-scope local workflows.
 - Automatically pulls references into `n8n/references/` and recreates `index.yaml`.
+- **Dry Run (`--dry-run`)**: Simulates the pull process, listing what files would be created, updated, or deleted without writing to disk or changing sync state.
 
 ### `n8ncli push`
 ```bash
@@ -164,9 +165,10 @@ n8ncli status [--mcp-command <cmd>] [--access-token <token>] [--api-key <key>] [
 
 ### `n8ncli diff`
 ```bash
-n8ncli diff <file>
+n8ncli diff <file> [--semantic]
 ```
 - Retrieves remote version, converts to TS, and prints unified diff (`+` and `-` lines) against the local version.
+- **Semantic Diffing (`--semantic`)**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff, preventing coordinate changes from creating noise in the diff output.
 
 ### `n8ncli validate`
 ```bash
@@ -203,7 +205,8 @@ n8ncli unpublish <workflow-id-or-file>
 
 ### `n8ncli nodes`
 - `n8ncli nodes search <query>`: Finds matching core and community nodes.
-- `n8ncli nodes types <nodeIds...>`: Retrieves TS types for parameter auto-completion.
+- `n8ncli nodes types <nodeIds...>`: Retrieves TS types for parameter auto-completion. Supports colon-separated resource and operation discriminators (e.g. `n8n-nodes-base.gmail:message:send`).
+- `n8ncli nodes doc <nodeId>`: Generates interactive documentation, a copy-pasteable TypeScript SDK code example showing default options/types, a summary parameter table, and raw type definitions. Supports colon-separated resource and operation discriminators.
 - `n8ncli nodes suggest <categories...>`: Recommends nodes by category.
 
 ### `n8ncli sdk`

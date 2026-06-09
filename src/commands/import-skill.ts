@@ -158,10 +158,10 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli lint [--fix]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping.
 
 ### Syncing
-- \`n8ncli pull [--force] [--hard]\`: Pull workflows from n8n instance and sync folder metadata.
+- \`n8ncli pull [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata, or simulate the pull without writing to disk.
 - \`n8ncli push [--force] [--dry-run]\`: Deploy local modifications and folder structures.
 - \`n8ncli status\`: List modified, untracked, deleted, or remote-only files.
-- \`n8ncli diff <file>\`: Show line diff of a local file against remote.
+- \`n8ncli diff <file> [--semantic]\`: Show line diff of a local file against remote (use \`--semantic\` to ignore node coordinate/position differences).
 
 ### Verification & Testing
 - \`n8ncli validate [files...] [--lint]\`: Validate syntax, schema, and node versions (and optionally standards style checks).
@@ -173,7 +173,8 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli publish <file-or-id>\`: Activate a workflow for production triggers.
 - \`n8ncli unpublish <file-or-id>\`: Deactivate a workflow.
 - \`n8ncli nodes search <queries...>\`: Search available node types (e.g. \`gmail\`, \`slack\`).
-- \`n8ncli nodes types <nodeIds...>\`: View exact TypeScript parameters and interfaces for nodes.
+- \`n8ncli nodes types <nodeIds...>\`: View exact TypeScript parameters and interfaces for nodes (supports colon syntax e.g. \`n8n-nodes-base.gmail:message:send\` for operation-specific types).
+- \`n8ncli nodes doc <nodeId>\`: Get interactive documentation, copy-pasteable TypeScript SDK code examples, parameter details, and raw types.
 - \`n8ncli sdk [section-or-query]\`: View workflow SDK guidelines, expressions, patterns, and rules, or search case-insensitively for a keyword.
 
 ---
@@ -193,11 +194,11 @@ Follow these steps when creating, editing, or managing workflows:
    n8ncli sdk all
    \`\`\`
    Look at \`n8n/references/\` for workflow examples.
-3. **Inspect Node Schemas:**
-   When adding a new node, search for its type and view its exact TypeScript interface:
+3. **Inspect Node Schemas & Docs:**
+   When adding a new node, search for its type, and get interactive documentation and copy-pasteable SDK examples:
    \`\`\`bash
    n8ncli nodes search gmail
-   n8ncli nodes types n8n-nodes-base.gmail
+   n8ncli nodes doc n8n-nodes-base.gmail:message:send
    \`\`\`
 4. **Develop / Modify:**
    Workflows are stored under \`n8n/workflows/\`.

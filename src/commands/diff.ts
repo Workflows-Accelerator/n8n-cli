@@ -53,6 +53,14 @@ function printDiff(orig: string[], mod: string[]) {
   diffLines.forEach(line => console.log(line));
 }
 
+function stripPositions(content: string): string {
+  // Replace ", position: [x, y]"
+  let cleaned = content.replace(/,\s*position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]/g, '');
+  // Also replace "position: [x, y],"
+  cleaned = cleaned.replace(/position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]\s*,?/g, '');
+  return cleaned;
+}
+
 export function diffCommand(program: Command) {
   program
     .command('diff')
@@ -60,6 +68,7 @@ export function diffCommand(program: Command) {
     .argument('<file>', 'path to the local workflow file')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
+    .option('--semantic', 'ignore coordinate/layout changes in diff output', false)
     .action(async (file, options) => {
       try {
         const { mcpCommand, accessToken, repoRoot, localDir } = getConnectionInfo(options);
@@ -98,8 +107,15 @@ export function diffCommand(program: Command) {
           // Generate remote TS code
           const remoteContent = generateWorkflowCode(details);
 
-          const origLines = remoteContent.replace(/\r\n/g, '\n').split('\n');
-          const modLines = localContent.replace(/\r\n/g, '\n').split('\n');
+          let remoteClean = remoteContent;
+          let localClean = localContent;
+          if (options.semantic) {
+            remoteClean = stripPositions(remoteContent);
+            localClean = stripPositions(localContent);
+          }
+
+          const origLines = remoteClean.replace(/\r\n/g, '\n').split('\n');
+          const modLines = localClean.replace(/\r\n/g, '\n').split('\n');
 
           output.log(`--- Remote (${entry.id})`);
           output.log(`+++ Local (${relativePath})`);
@@ -112,3 +128,4 @@ export function diffCommand(program: Command) {
       }
     });
 }
+
