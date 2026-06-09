@@ -71,6 +71,26 @@ async function enableMcpForWorkflow(
 
   if (apiKey && instanceUrl) {
     try {
+      // Sanitize the body for the REST API to avoid "must NOT have additional properties" error (400 Bad Request)
+      const allowedKeys = [
+        'name',
+        'nodes',
+        'connections',
+        'active',
+        'settings',
+        'staticData',
+        'meta',
+        'pinData',
+        'versionId',
+        'parentFolderId'
+      ];
+      const sanitizedWf: Record<string, any> = {};
+      for (const key of allowedKeys) {
+        if (updatedWf[key] !== undefined) {
+          sanitizedWf[key] = updatedWf[key];
+        }
+      }
+
       const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
       const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${w.id}`, {
         method: 'PUT',
@@ -78,7 +98,7 @@ async function enableMcpForWorkflow(
           'X-N8N-API-KEY': apiKey,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(updatedWf),
+        body: JSON.stringify(sanitizedWf),
       });
 
       if (res.ok) {
