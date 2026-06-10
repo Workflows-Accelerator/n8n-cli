@@ -6,6 +6,18 @@ import pg from 'pg';
 import { generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from './output.js';
 
+export interface ReferenceSource {
+  name?: string;
+  env?: string;
+  projectId?: string;
+  projectName?: string;
+  folderId?: string;
+  folderName?: string;
+  path?: string;
+  repository?: string;
+  branch?: string;
+}
+
 export interface N8nCliConfig {
   env?: string;
   environmentName?: string;
@@ -14,13 +26,7 @@ export interface N8nCliConfig {
   folderId?: string;
   folderName?: string;
   localDir?: string;
-  references?: {
-    env?: string;
-    projectId: string;
-    projectName: string;
-    folderId?: string;
-    folderName?: string;
-  };
+  references?: ReferenceSource | ReferenceSource[];
 }
 
 export function getConfigPath(repoRoot: string): string {

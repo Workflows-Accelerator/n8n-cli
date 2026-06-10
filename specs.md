@@ -12,18 +12,25 @@
 **Path:** `n8n/config/n8n-cli.json` (Committed)
 Stores project-specific, non-sensitive IDs and environment selectors.
 ```json
-{
-  "env": "PROD",
-  "projectId": "5U5vIHIc1Ug5eVLK",
-  "projectName": "My n8n Project <n8n@example.com>",
-  "folderId": "Nz4UtQWrmrHMcZIE",
-  "folderName": "Main Workflows",
-  "references": {
-    "projectId": "5U5vIHIc1Ug5eVLK",
-    "projectName": "My n8n Project <n8n@example.com>",
-    "folderId": "3JiyzwujIPklu0w8",
-    "folderName": "AI Examples"
-  }
+  "references": [
+    {
+      "env": "PROD",
+      "projectId": "5U5vIHIc1Ug5eVLK",
+      "projectName": "My n8n Project <n8n@example.com>",
+      "folderId": "3JiyzwujIPklu0w8",
+      "folderName": "AI Examples"
+    },
+    {
+      "name": "Local Libraries",
+      "path": "../shared-libs/workflows"
+    },
+    {
+      "name": "Community Templates",
+      "repository": "https://github.com/n8n-io/n8n.git",
+      "branch": "main",
+      "path": "templates"
+    }
+  ]
 }
 ```
 
@@ -141,7 +148,10 @@ n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <
 - Writes `.workflow.ts` locally and saves metadata to `sync-state.json`.
 - **Empty Folder Retention Safety**: Retains empty directories on disk if they exist on the remote instance.
 - **Hard Sync (`--hard`)**: Deletes untracked and out-of-scope local workflows.
-- Automatically pulls references into `n8n/references/` and recreates `index.yaml`.
+- Automatically pulls references from multiple environments/projects, local directories, or Git repositories into `n8n/references/` and recreates `index.yaml`.
+  - **Single Remote Reference**: Pulls workflows directly into `n8n/references/` (backward compatible).
+  - **Multi-Source References**: Pulls each reference source into `n8n/references/<sanitized_name>/`.
+  - **Git Cache**: Git repositories are cloned/pulled inside `n8n/references/.repos/` cache.
 - **Dry Run (`--dry-run`)**: Simulates the pull process, listing what files would be created, updated, or deleted without writing to disk or changing sync state.
 
 ### `n8ncli push`
@@ -216,6 +226,12 @@ n8ncli unpublish <workflow-id-or-file>
 n8ncli sdk [section-or-query]
 ```
 - Prints n8n Workflow SDK documentation. Supports specific sections (`patterns`, `expressions`, `functions`, `guidelines`, `design`, `all`) or case-insensitive keyword search filtering.
+
+### `n8ncli environments` / `env`
+- `n8ncli env list` (or `n8ncli env` / `envs`): Lists all configured n8n environments from the global configuration (~/.n8ncli-global.json).
+- `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS` or `FAILURE` with connection status details.
+- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
+- `n8ncli env delete <name>` (or `remove`): Removes an environment configuration from global config settings.
 
 ### `n8ncli lint`
 ```bash

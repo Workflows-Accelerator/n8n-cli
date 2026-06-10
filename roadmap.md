@@ -62,7 +62,7 @@ This file tracks improvements, features, and fixes for `n8n-cli`.
 - [ ] **15. Workflow Positioning / Layout Engine**
   - *Problem:* Positioning nodes properly in code-defined workflows is hard.
   - *Fix:* Integrate a layout engine (like Dagre) to auto-position nodes and determine bounding boxes.
-- [ ] **16. Support Multi-Project & Multi-Environment References**
+- [x] **16. Support Multi-Project & Multi-Environment References**
   - *Problem:* References/contexts are currently single-environment/folder.
   - *Fix:* Allow reference resolution from multiple directories, repositories, or environments.
 - [x] **17. Remote-Pulled Standards Violations**

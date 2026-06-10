@@ -14,7 +14,7 @@ export function projectsCommand(program: Command) {
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
       try {
-        const { mcpCommand, accessToken } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, instanceUrl } = getConnectionInfo(options);
 
         await withMcp(mcpCommand, accessToken, async (mcp) => {
           const response = await mcp.callToolAndGetJson('search_projects', {
@@ -42,7 +42,7 @@ export function projectsCommand(program: Command) {
           const rows = projects.map((p: any) => [p.id, p.name, p.type || 'unknown']);
           
           output.table(headers, rows);
-        });
+        }, instanceUrl);
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);

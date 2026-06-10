@@ -28,7 +28,7 @@ export function foldersCommand(program: Command) {
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
       try {
-        const { mcpCommand, accessToken, config } = getConnectionInfo(options);
+        const { mcpCommand, accessToken, config, instanceUrl } = getConnectionInfo(options);
         
         const projectId = options.projectId || (config && config.projectId);
         if (!projectId) {
@@ -58,7 +58,7 @@ export function foldersCommand(program: Command) {
           const rows = foldersList.map((f: any) => [f.id, f.name, f.projectId || projectId]);
           
           output.table(headers, rows);
-        });
+        }, instanceUrl);
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
         process.exit(1);
