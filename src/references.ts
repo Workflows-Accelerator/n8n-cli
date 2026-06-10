@@ -13,7 +13,7 @@ import { calculateHash } from './sync-state.js';
 export interface ReferenceWorkflowInfo {
   name: string;
   path: string;
-  description: string;
+  description?: string;
 }
 
 export async function enableMcpForWorkflow(
@@ -369,11 +369,14 @@ async function pullRemoteN8nReference(
             } catch (e) {}
           }
 
-          workflowInfos.push({
+          const wfInfo: ReferenceWorkflowInfo = {
             name: details.name,
             path: relativeFilePath,
-            description: description || 'No description provided.',
-          });
+          };
+          if (description) {
+            wfInfo.description = description;
+          }
+          workflowInfos.push(wfInfo);
         } catch (err) {
           output.warn(`Failed to pull reference workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
         }
@@ -566,11 +569,14 @@ async function pullLocalPathReference(
         }
       }
 
-      workflowInfos.push({
+      const wfInfo: ReferenceWorkflowInfo = {
         name: workflowName,
         path: relativeFilePath,
-        description: description || 'No description provided.',
-      });
+      };
+      if (description) {
+        wfInfo.description = description;
+      }
+      workflowInfos.push(wfInfo);
     } catch (err) {
       output.warn(`Failed to process local reference file '${file}': ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -692,12 +698,13 @@ export async function pullReferences(
   }
 
   const activeRefPaths = new Set<string>();
-  const workflowInfos: ReferenceWorkflowInfo[] = [];
+  const groupedWorkflows: Record<string, Record<string, ReferenceWorkflowInfo[]>> = {};
 
   const isLegacySingle = sources.length === 1 && !sources[0].name && !sources[0].path && !sources[0].repository;
 
   for (let idx = 0; idx < sources.length; idx++) {
     const source = sources[idx];
+    const sourceWorkflows: ReferenceWorkflowInfo[] = [];
     let subDir = '';
     if (!isLegacySingle) {
       const rawName = source.name || source.projectName || (source.path ? path.basename(source.path) : '') || (source.repository ? getRepoName(source.repository) : '') || `source_${idx + 1}`;
@@ -719,7 +726,7 @@ export async function pullReferences(
         targetDir,
         subDir,
         activeRefPaths,
-        workflowInfos
+        sourceWorkflows
       );
     } else if (source.path) {
       await pullLocalPathReference(
@@ -728,7 +735,7 @@ export async function pullReferences(
         targetDir,
         subDir,
         activeRefPaths,
-        workflowInfos,
+        sourceWorkflows,
         dryRun
       );
     } else if (source.repository) {
@@ -739,9 +746,22 @@ export async function pullReferences(
         targetDir,
         subDir,
         activeRefPaths,
-        workflowInfos,
+        sourceWorkflows,
         dryRun
       );
+    }
+
+    if (sourceWorkflows.length > 0) {
+      const envKey = source.env || (source.projectId ? (currentEnv || 'development') : (source.repository ? 'Git' : 'Local'));
+      const sourceName = source.name || source.projectName || (source.path ? path.basename(source.path) : '') || (source.repository ? getRepoName(source.repository) : '') || `source_${idx + 1}`;
+      
+      if (!groupedWorkflows[envKey]) {
+        groupedWorkflows[envKey] = {};
+      }
+      if (!groupedWorkflows[envKey][sourceName]) {
+        groupedWorkflows[envKey][sourceName] = [];
+      }
+      groupedWorkflows[envKey][sourceName].push(...sourceWorkflows);
     }
   }
 
@@ -779,7 +799,7 @@ export async function pullReferences(
 
   // Write index.yaml
   const indexPath = path.join(referencesDir, 'index.yaml');
-  const yamlContent = YAML.stringify({ workflows: workflowInfos });
+  const yamlContent = YAML.stringify(groupedWorkflows);
   if (!dryRun) {
     fs.writeFileSync(
       indexPath,
