@@ -5,7 +5,7 @@ import pg from 'pg';
 import { execSync } from 'child_process';
 import { generateWorkflowCode, parseWorkflowCode } from '@n8n/workflow-sdk';
 import { McpClient, withMcp } from './mcp-client.js';
-import { N8nCliConfig, buildFolderPaths, getWorkflowDetails, loadGlobalConfig, ReferenceSource, fetchWorkflowsPaginated } from './config.js';
+import { N8nCliConfig, buildFolderPaths, getWorkflowDetails, loadGlobalConfig, ReferenceSource, fetchWorkflowsPaginated, fetchWorkflowsWithDb } from './config.js';
 import * as output from './output.js';
 import { glob } from 'glob';
 import { calculateHash } from './sync-state.js';
@@ -280,7 +280,13 @@ async function pullRemoteN8nReference(
 
   output.log(`Pulling remote references from project: ${source.projectName || refProjId} [Env: ${refEnv}]...`);
 
-  const doPull = async (activeMcp: McpClient, activeInstanceUrl: string, activeApiKey: string, activeDbUrl: string) => {
+  const doPull = async (
+    activeMcp: McpClient,
+    activeInstanceUrl: string,
+    activeApiKey: string,
+    activeDbUrl: string,
+    activeFolderCache: Record<string, string | null>
+  ) => {
     let folderPaths: Record<string, string> = {};
     try {
       const foldersResponse = await activeMcp.callToolAndGetJson('search_folders', { projectId: refProjId });
@@ -313,7 +319,7 @@ async function pullRemoteN8nReference(
         try {
           const details = await getWorkflowDetails(activeMcp, activeInstanceUrl, activeApiKey, w.id);
           
-          let wFolderId = folderCache[w.id];
+          let wFolderId = activeFolderCache[w.id];
           if (wFolderId === undefined) {
             wFolderId = details.parentFolderId || details.folderId || null;
           }
@@ -396,7 +402,7 @@ async function pullRemoteN8nReference(
       }
 
       const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
-      await doPull(mcp, instanceUrl, apiKey, dbUrl);
+      await doPull(mcp, instanceUrl, apiKey, dbUrl, folderCache);
     } finally {
       if (!isSameProject) {
         output.log(`Restoring MCP access settings for reference project '${source.projectName || refProjId}'...`);
@@ -427,6 +433,22 @@ async function pullRemoteN8nReference(
       return;
     }
 
+    // Retrieve reference-specific folder relationships from target DB
+    let refFolderCache: Record<string, string | null> = {};
+    if (refDbUrl) {
+      try {
+        output.log(`Fetching workflow-to-folder relationships for reference environment '${refEnv}' from PostgreSQL...`);
+        const dbWorkflows = await fetchWorkflowsWithDb(refDbUrl);
+        if (dbWorkflows) {
+          for (const dbW of dbWorkflows) {
+            refFolderCache[dbW.id] = dbW.parentFolderId || null;
+          }
+        }
+      } catch (err) {
+        output.warn(`Failed to retrieve folder cache from reference database for '${refEnv}': ${err instanceof Error ? err.message : String(err)}.`);
+      }
+    }
+
     output.log(`Connecting to reference environment '${refEnv}'...`);
     await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
       let refMcpCache: Record<string, boolean> = {};
@@ -437,8 +459,8 @@ async function pullRemoteN8nReference(
           const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
           refFolderPaths = buildFolderPaths(folders, refFolderId);
         } catch (e) {}
-        refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, folderCache, refDbUrl);
-        await doPull(refMcp, refInstanceUrl, refApiKey, refDbUrl);
+        refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, refFolderCache, refDbUrl);
+        await doPull(refMcp, refInstanceUrl, refApiKey, refDbUrl, refFolderCache);
       } finally {
         output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
         try {
