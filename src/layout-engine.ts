@@ -15,7 +15,7 @@ export interface LayoutOptions {
   subnodeHorizontalSep?: number;
 }
 
-interface NodeMetadata {
+export interface NodeMetadata {
   node_type: string;
   outputs: any[];
   is_trigger: boolean;
@@ -23,7 +23,7 @@ interface NodeMetadata {
 }
 
 // Global cache for node metadata loaded from SQLite
-const dbMetadataCache = new Map<string, NodeMetadata>();
+export const dbMetadataCache = new Map<string, NodeMetadata>();
 let dbLoaded = false;
 
 /**
@@ -62,7 +62,7 @@ function findNodesDb(): { dbPath: string; sqljsPath: string } | null {
 /**
  * Load SQLite nodes database if present.
  */
-async function loadNodesDatabase(): Promise<boolean> {
+export async function loadNodesDatabase(): Promise<boolean> {
   if (dbLoaded) return true;
   const dbInfo = findNodesDb();
   if (!dbInfo) return false;
@@ -109,7 +109,7 @@ async function loadNodesDatabase(): Promise<boolean> {
 /**
  * Clean node type name to match SQLite format
  */
-function cleanNodeType(type: string): string {
+export function cleanNodeType(type: string): string {
   return type.replace(/^@n8n\/n8n-/, '').replace(/^n8n-/, '');
 }
 

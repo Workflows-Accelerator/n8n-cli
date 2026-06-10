@@ -4,6 +4,7 @@ import os from 'os';
 import { generateWorkflowCode } from '@n8n/workflow-sdk';
 import { createRequire } from 'module';
 import * as output from './output.js';
+import { dbMetadataCache, cleanNodeType } from './layout-engine.js';
 const require = createRequire(import.meta.url);
 
 // Safe require for spell-checker-js
@@ -530,6 +531,79 @@ function renameNodeInExpressions(modifiedJson: any, oldName: string, newName: st
   return count;
 }
 
+function evaluateOutputsExpression(expr: string, parameters: any): any[] {
+  if (expr.startsWith('={{') && expr.endsWith('}}')) {
+    const jsCode = expr.slice(3, -2).trim();
+    try {
+      const fn = new Function('$parameter', `return (${jsCode});`);
+      const res = fn(parameters || {});
+      if (Array.isArray(res)) {
+        return res;
+      }
+    } catch (e) {
+      // Fallback
+    }
+  }
+  return [];
+}
+
+export function getNodeMaxAllowedOutputs(node: any): number {
+  const nodeType = node.type || '';
+
+  // 1. Filter node override (only Keep output is connectable, Discard is not)
+  if (nodeType === 'n8n-nodes-base.filter') {
+    let count = 1;
+    if (node.onError === 'continueErrorOutput' || node.settings?.onError === 'continueErrorOutput') {
+      count += 1;
+    }
+    return count;
+  }
+
+  // 2. Lookup node metadata
+  const cleanType = cleanNodeType(nodeType);
+  const dbEntry = dbMetadataCache.get(cleanType);
+
+  let baseOutputs = 1;
+  if (dbEntry) {
+    if (typeof dbEntry.outputs === 'string') {
+      const expr = dbEntry.outputs;
+      if (expr.startsWith('={{')) {
+        const evaled = evaluateOutputsExpression(expr, node.parameters);
+        baseOutputs = Math.max(1, evaled.length);
+      } else {
+        baseOutputs = 1;
+      }
+    } else if (Array.isArray(dbEntry.outputs)) {
+      baseOutputs = dbEntry.outputs.length;
+    }
+  } else {
+    // Fallback heuristic matching layout-engine
+    if (nodeType.endsWith('Tool')) {
+      baseOutputs = 1;
+    } else if (nodeType === 'n8n-nodes-base.stickyNote') {
+      baseOutputs = 0;
+    } else {
+      baseOutputs = 1;
+    }
+  }
+
+  // Fallback for Switch node if DB is not loaded or evaluation returns <= 1
+  if (nodeType === 'n8n-nodes-base.switch' && baseOutputs <= 1) {
+    const rules = node.parameters?.rules?.values || [];
+    const hasFallback = node.parameters?.options?.fallbackOutput !== 'none' && node.parameters?.options?.fallbackOutput !== undefined;
+    baseOutputs = Math.max(1, rules.length + (hasFallback ? 1 : 0));
+  }
+
+  // 3. Error output settings option (adds 1 extra output if continueErrorOutput)
+  const hasErrorOutput = node.onError === 'continueErrorOutput' || node.settings?.onError === 'continueErrorOutput';
+  let count = baseOutputs;
+  if (hasErrorOutput) {
+    count += 1;
+  }
+
+  return count;
+}
+
 export function validateWorkflowAgainstStandards(
   workflowJson: any,
   standards: StandardsConfig,
@@ -817,6 +891,37 @@ export function validateWorkflowAgainstStandards(
       }
     }
   }
+
+  // 5. Connection Port validation
+  const connections = workflowJson.connections || {};
+  for (const [sourceName, outputsObj] of Object.entries(connections)) {
+    const sourceNode = nodes.find((n: any) => n.name === sourceName);
+    if (!sourceNode) continue;
+    const nodeType = sourceNode.type || '';
+
+    if (outputsObj && typeof outputsObj === 'object') {
+      for (const [connType, targetGroups] of Object.entries(outputsObj as any)) {
+        if (connType === 'main' && Array.isArray(targetGroups)) {
+          targetGroups.forEach((targets: any, outputIndex: number) => {
+            if (Array.isArray(targets) && targets.length > 0) {
+              const maxAllowedOutputs = getNodeMaxAllowedOutputs(sourceNode);
+              if (outputIndex >= maxAllowedOutputs) {
+                if (maxAllowedOutputs === 1) {
+                  warnings.push(
+                    `Node "${sourceName}" [${nodeType}] is connecting from output index ${outputIndex}, but this node type only has a single main output (index 0). If you want to connect to multiple nodes in parallel, use parallel connections from output 0 (e.g. .to([target1, target2])), rather than .output(${outputIndex}).`
+                  );
+                } else {
+                  warnings.push(
+                    `Node "${sourceName}" [${nodeType}] is connecting from output index ${outputIndex}, but it only has ${maxAllowedOutputs} configured output(s) based on its structure/rules.`
+                  );
+                }
+              }
+            }
+          });
+        }
+      }
+    }
+  }
   
   return { errors, warnings };
 }
@@ -951,6 +1056,41 @@ export function fixWorkflowAgainstStandards(
             node.notesInFlow = true;
             if (!nodeModified) {
               fixedCount++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // Fix connection port issues: merge any outputs on index > 0 into index 0 for single-output nodes
+  if (modifiedJson.connections && typeof modifiedJson.connections === 'object') {
+    for (const [sourceName, outputsObj] of Object.entries(modifiedJson.connections)) {
+      const sourceNode = nodes.find((n: any) => n.name === sourceName);
+      if (!sourceNode) continue;
+
+      const maxAllowed = getNodeMaxAllowedOutputs(sourceNode);
+      if (maxAllowed === 1 && outputsObj && typeof outputsObj === 'object') {
+        const outputsCast = outputsObj as any;
+        for (const connType of Object.keys(outputsCast)) {
+          if (connType === 'main' && Array.isArray(outputsCast[connType])) {
+            const targetGroups = outputsCast[connType];
+            let needsFix = false;
+            const allTargets: any[] = [];
+            
+            targetGroups.forEach((targets: any, outputIndex: number) => {
+              if (Array.isArray(targets) && targets.length > 0) {
+                allTargets.push(...targets);
+                if (outputIndex > 0) {
+                  needsFix = true;
+                }
+              }
+            });
+
+            if (needsFix) {
+              outputsCast[connType] = [allTargets];
+              fixedCount++;
+              output.warn(`[FIX] Merged invalid connection outputs on node "${sourceName}" into a single parallel output list at index 0.`);
             }
           }
         }

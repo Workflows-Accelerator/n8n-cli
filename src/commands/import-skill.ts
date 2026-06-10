@@ -290,6 +290,108 @@ node('POST /submit-lead', 'n8n-nodes-base.webhook')
     responseMode: 'onReceived'
   })
 \`\`\`
+
+### 3. Switch Nodes and Multi-Branch Routing
+For Switch nodes, use \`onCase(index, targetNode)\` where \`index\` is a 0-based routing output index matching the order of configured rules:
+\`\`\`typescript
+import { workflow, node, switchCase } from '@n8n/workflow-sdk';
+
+const startTrigger = trigger({
+  type: 'n8n-nodes-base.manualTrigger',
+  version: 1,
+  config: { name: 'Start' }
+});
+
+const routeByStatus = switchCase({
+  version: 3.2,
+  config: {
+    name: 'Route by Status',
+    parameters: {
+      rules: {
+        values: [
+          { outputKey: 'active', conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'active' }], combinator: 'and' } },
+          { outputKey: 'pending', conditions: { options: { caseSensitive: true, leftValue: '', typeValidation: 'strict' }, conditions: [{ leftValue: expr('{{ $json.status }}'), operator: { type: 'string', operation: 'equals' }, rightValue: 'pending' }], combinator: 'and' } }
+        ]
+      }
+    }
+  }
+});
+
+const activeHandler = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Active Handler' } });
+const pendingHandler = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Pending Handler' } });
+const fallbackHandler = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Fallback Handler' } });
+
+export default workflow('switch-workflow', 'Switch Workflow')
+  .add(startTrigger)
+  .to(routeByStatus
+    .onCase(0, activeHandler)
+    .onCase(1, pendingHandler)
+    .onCase(2, fallbackHandler)
+  );
+\`\`\`
+
+### 4. Parallel Connections (One-to-Many Outputs)
+To branch out into parallel streams from a single-output node (like HTTP Request, Trigger, Code, etc.), connect to an array of nodes using \`.to([target1, target2])\`. Do NOT call \`.output(1)\` or \`.onCase()\` as they are invalid on single-output nodes:
+\`\`\`typescript
+import { workflow, node, merge } from '@n8n/workflow-sdk';
+
+const startTrigger = trigger({
+  type: 'n8n-nodes-base.manualTrigger',
+  version: 1,
+  config: { name: 'Start' }
+});
+
+const processA = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Process A' } });
+const processB = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Process B' } });
+
+const combineResults = merge({
+  version: 3.2,
+  config: { name: 'Combine Results', parameters: { mode: 'combine' } }
+});
+
+const finalStep = node({ type: 'n8n-nodes-base.noOp', version: 1, config: { name: 'Final Step' } });
+
+export default workflow('parallel-workflow', 'Parallel Workflow')
+  .add(startTrigger
+    .to([
+      processA,
+      processB
+    ])
+  )
+  .add(processA.to(combineResults.input(0)))
+  .add(processB.to(combineResults.input(1)))
+  .add(combineResults)
+  .to(finalStep);
+\`\`\`
+
+### 5. Code Nodes with Notes
+Code nodes require descriptive notes. Ensure \`notes\` and \`notesInFlow\` are placed inside the \`.config()\` block of the node:
+\`\`\`typescript
+import { workflow, node } from '@n8n/workflow-sdk';
+
+const startTrigger = trigger({
+  type: 'n8n-nodes-base.manualTrigger',
+  version: 1,
+  config: { name: 'Start' }
+});
+
+const processCode = node({
+  type: 'n8n-nodes-base.code',
+  version: 2,
+  config: {
+    name: 'Process Data Code',
+    notes: 'Processes input values and sums up the total processed value.',
+    notesInFlow: true
+  },
+  parameters: {
+    jsCode: 'return $input.all().map(item => ({ json: { val: item.json.val * 2 } }));'
+  }
+});
+
+export default workflow('code-workflow', 'Code Workflow')
+  .add(startTrigger)
+  .to(processCode);
+\`\`\`
 `;
 
   content += generateStandardsSkillSection(standards);

@@ -68,6 +68,6 @@ This file tracks improvements, features, and fixes for `n8n-cli`.
 - [x] **17. Remote-Pulled Standards Violations**
   - *Problem:* Remote files pulled down can immediately violate standards, putting the agent in a catch-22.
   - *Fix:* Skip linter validation on files not modified locally, or warn on pull instead of blocking validation.
-- [ ] **18. Debug and Resolve Node Connection Issues**
+- [x] **18. Debug and Resolve Node Connection Issues**
   - *Problem:* Workflows with one-to-many connections, Switch nodes, or Code nodes often suffer from serialization/connection bugs.
   - *Fix:* Gather examples, debug the serializer, and document correct structures in skills.

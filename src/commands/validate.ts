@@ -8,6 +8,7 @@ import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
 import { loadSyncState, calculateHash } from '../sync-state.js';
+import { loadNodesDatabase } from '../layout-engine.js';
 
 function parseLatestVersions(text: string): Record<string, number> {
   const versions: Record<string, number> = {};
@@ -48,6 +49,7 @@ export function validateCommand(program: Command) {
     .option('--only-modified', 'only validate files that have local modifications', false)
     .action(async (files, options) => {
       try {
+        await loadNodesDatabase();
         const repoRoot = findRepoRoot();
         if (!repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');

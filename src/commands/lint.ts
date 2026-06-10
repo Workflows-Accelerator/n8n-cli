@@ -7,6 +7,7 @@ import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-
 import { loadStandards, validateWorkflowAgainstStandards, fixWorkflowAgainstStandards, toSmartTitleCase } from '../lint-engine.js';
 import { loadSyncState, saveSyncState, calculateHash } from '../sync-state.js';
 import * as output from '../output.js';
+import { loadNodesDatabase } from '../layout-engine.js';
 
 function cleanEmptyParentDirs(startDir: string, stopDir: string) {
   let dir = path.resolve(startDir);
@@ -29,6 +30,7 @@ export function lintCommand(program: Command) {
     .option('--only-modified', 'only lint files that have local modifications', false)
     .action(async (options) => {
       try {
+        await loadNodesDatabase();
         const repoRoot = findRepoRoot();
         if (!repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');

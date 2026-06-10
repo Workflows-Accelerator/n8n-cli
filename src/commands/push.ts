@@ -9,6 +9,7 @@ import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
+import { loadNodesDatabase } from '../layout-engine.js';
 
 function extractIdFromResponse(response: any): string | null {
   if (!response) return null;
@@ -68,6 +69,7 @@ export function pushCommand(program: Command) {
       let pgClient: any = null;
       let hasConflicts = false;
       try {
+        await loadNodesDatabase();
         const { mcpCommand, accessToken, config, repoRoot, localDir, dbUrl, apiKey, instanceUrl } = getConnectionInfo(options);
         if (!config || !repoRoot) {
           throw new Error('Project must be initialized. Run `n8ncli init` first.');
