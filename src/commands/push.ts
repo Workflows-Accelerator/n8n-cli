@@ -559,6 +559,7 @@ export function pushCommand(program: Command) {
                   sanitizedWf.settings = { ...sanitizedWf.settings };
                   delete sanitizedWf.settings.availableInMCP;
                   delete sanitizedWf.settings.binaryMode;
+                  delete sanitizedWf.settings.description;
                 }
 
                 // Set parentFolderId relationship
@@ -761,6 +762,7 @@ export function pushCommand(program: Command) {
                   sanitizedWf.settings = { ...sanitizedWf.settings };
                   delete sanitizedWf.settings.availableInMCP;
                   delete sanitizedWf.settings.binaryMode;
+                  delete sanitizedWf.settings.description;
                 }
 
                 const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');

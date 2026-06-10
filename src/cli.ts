@@ -22,6 +22,8 @@ import { environmentsCommand } from './commands/environments.js';
 import { importSkillCommand } from './commands/import-skill.js';
 import { lintCommand } from './commands/lint.js';
 import { standardsCommand } from './commands/standards.js';
+import { layoutCommand } from './commands/layout.js';
+
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8'));
@@ -65,6 +67,8 @@ environmentsCommand(program);
 importSkillCommand(program);
 lintCommand(program);
 standardsCommand(program);
+layoutCommand(program);
+
 
 // Parse arguments asynchronously
 program.parseAsync(process.argv).catch(err => {

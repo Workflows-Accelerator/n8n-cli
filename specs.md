@@ -230,6 +230,35 @@ n8ncli lint [--fix] [--only-modified]
 - `n8ncli standards init [--force]`: Generates a standard default `n8n-standards.json` file.
 - `n8ncli standards allow <words...>`: Appends one or more words to the allowed words configuration in `n8n-standards.json`.
 
+### `n8ncli layout`
+```bash
+n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--dry-run]
+```
+- Auto-positions nodes in local `.workflow.ts` files using the Dagre layout engine.
+- Automatically resolves sizes for standard nodes, triggers, sticky notes, flex nodes, and AI clusters or sub-clusters based on their port signatures.
+- Resolves parameters from command-line options, then local `n8n-cli.json` configuration (`layout` object), and falls back to dynamic defaults based on the grid step.
+- **`--nodesep <px>`**: Specifies node separation distance in pixels (defaults to `layout.nodesep` in `n8n-cli.json` or dynamically computed as `6 * grid`).
+- **`--ranksep <px>`**: Specifies rank (column) separation distance in pixels (defaults to `layout.ranksep` in `n8n-cli.json` or dynamically computed as `6 * grid`).
+- **`--grid <px>`**: Snapping grid size in pixels (defaults to `layout.grid` in `n8n-cli.json` or `20`).
+- **`--no-align-terminal-nodes`**: Disables the vertical alignment of terminal nodes with their closest predecessors.
+- **`--subnode-sep <px>`**: Specifies vertical spacing between a parent node and its subnodes (defaults to `layout.subnodeSep` or dynamically computed as `ranksep + 2 * grid`).
+- **`--subnode-horizontal-sep <px>`**: Specifies horizontal spacing between subnodes (defaults to `layout.subnodeHorizontalSep` or dynamically computed as `4 * grid`).
+- **`--dry-run`**: Simulates the auto-positioning without modifying the file.
+
+### Local Layout Config Example (`n8n-cli.json`):
+```json
+{
+  "layout": {
+    "grid": 20,
+    "nodesep": 120,
+    "ranksep": 120,
+    "alignTerminalNodes": true,
+    "subnodeSep": 160,
+    "subnodeHorizontalSep": 80
+  }
+}
+```
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies

@@ -1,6 +1,6 @@
 ---
 name: n8ncli
-version: 1.0.9
+version: 1.1.3
 description: |
   Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
   Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
@@ -48,6 +48,8 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - `n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]`: Execute workflow.
 - `n8ncli test <file-or-id> [--pin-data <file>]`: Test run with mock pin data.
 - `n8ncli execution <file-or-id> <execution-id> [--include-data]`: Inspect execution details.
+- `n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--dry-run]`: Auto-position nodes in n8n workflows using Dagre.
+
 
 ### Publishing & Nodes
 - `n8ncli publish <file-or-id>`: Activate a workflow for production triggers.
