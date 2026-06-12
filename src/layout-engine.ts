@@ -2,7 +2,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { createRequire } from 'module';
+import { execSync } from 'child_process';
 import dagre from 'dagre';
+import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
 
 const require = createRequire(import.meta.url);
 

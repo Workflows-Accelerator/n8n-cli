@@ -7,7 +7,7 @@ import { loadSyncState } from '../sync-state.js';
 import { generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 
-function computeLcs(orig: string[], mod: string[]): Int32Array {
+export function computeLcs(orig: string[], mod: string[]): Int32Array {
   const m = orig.length;
   const n = mod.length;
   const dp = new Int32Array((m + 1) * (n + 1));
@@ -26,7 +26,7 @@ function computeLcs(orig: string[], mod: string[]): Int32Array {
   return dp;
 }
 
-function printDiff(orig: string[], mod: string[]) {
+export function printDiff(orig: string[], mod: string[]) {
   const dp = computeLcs(orig, mod);
   let i = orig.length;
   let j = mod.length;
@@ -53,12 +53,29 @@ function printDiff(orig: string[], mod: string[]) {
   diffLines.forEach(line => console.log(line));
 }
 
-function stripPositions(content: string): string {
+export function stripPositions(content: string): string {
   // Replace ", position: [x, y]"
   let cleaned = content.replace(/,\s*position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]/g, '');
   // Also replace "position: [x, y],"
   cleaned = cleaned.replace(/position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]\s*,?/g, '');
   return cleaned;
+}
+
+export function showConflictDiff(localPath: string, baseCode: string, localCode: string, remoteCode: string) {
+  output.warn(`\n======================================================================`);
+  output.warn(`CONFLICT DETAILS FOR WORKFLOW: ${localPath}`);
+  output.warn(`======================================================================`);
+  
+  const baseLines = baseCode.replace(/\r\n/g, '\n').split('\n');
+  const remoteLines = remoteCode.replace(/\r\n/g, '\n').split('\n');
+  const localLines = localCode.replace(/\r\n/g, '\n').split('\n');
+  
+  console.log(`\n--- 1. CHANGES MADE REMOTELY (Cache Base -> Remote) ---`);
+  printDiff(baseLines, remoteLines);
+  
+  console.log(`\n--- 2. CHANGES MADE LOCALLY (Cache Base -> Local) ---`);
+  printDiff(baseLines, localLines);
+  output.warn(`======================================================================\n`);
 }
 
 export function diffCommand(program: Command) {

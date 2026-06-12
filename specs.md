@@ -277,33 +277,69 @@ n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-a
 }
 ```
 
+### `n8ncli live`
+```bash
+n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--foreground] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
+```
+- Starts a live synchronization daemon. By default, it runs as a detached background process. Use `--foreground` to run in the foreground instead.
+- **Daemon Management**:
+  - `--status`: Prints the status of the daemon (RUNNING or STOPPED), PID, configuration, last check, and active conflicts.
+  - `--stop`: Gracefully terminates the running background daemon process.
+- **Time-To-Live (TTL)**: Daemon runs with a default TTL of 60 minutes (1 hour) if not specified via `--ttl <minutes>`. It shuts down automatically when the TTL is reached.
+- **Auto-Pull/Auto-Push**:
+  - Automatically pulls remote updates if there are no local changes.
+  - Automatically pushes local updates if there are no remote changes.
+  - Automatically archives remote workflows if local files are deleted.
+  - Automatically deletes local files if remote workflows are deleted.
+- **Interval**: Defaults to `5` seconds when direct PostgreSQL database connection (`--db-url`) is available (efficient polling), and `20` seconds when falling back to REST API polling. Can be overridden via `--interval`.
+- **Status File**: Generates and updates `n8n/config/live-status.json` on each tick. The file is structured for easy consumption by AI agents and other processes, detailing daemon status, pid, backend mode, stopAt ISO timestamp, and any active conflicts.
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies
 
-### 5.1 Pull Command Conflicts
+### 5.1 Workflow Base Caching
+To perform precise 3-way merges and distinguish local changes from remote changes:
+- `n8ncli` stores a cached copy of the last-synchronized version of each workflow under `n8n/config/cache/workflows/<id>.workflow.ts`.
+- This cache is updated automatically on every successful `pull` or `push` operation.
+- Cache entries are pruned when a workflow is archived/deleted.
+
+### 5.2 Conflict Identification & 3-Way Diffing
+When a change has occurred both locally and remotely since the last synchronization:
+- Direct push/pull operations without `--force` are blocked, returning exit code `3`.
+- The CLI loads the cached base version of the workflow, the current local code, and the current remote code.
+- It displays a 3-way diff, printing:
+  1. Diffs of changes made remotely (Base -> Remote)
+  2. Diffs of changes made locally (Base -> Local)
+- In `live` mode:
+  - If a conflict occurs, `conflict: true` is flagged in `sync-state.json`.
+  - Auto-sync is suspended for that workflow.
+  - The conflict is logged to `live-status.json`'s `conflicts` array with the timestamp and reason.
+  - Sync remains suspended for that workflow until resolved (e.g. by running a manual `pull --force`, `push --force`, or manually modifying the local file to align with remote).
+
+### 5.3 Pull Command Conflicts
 When running `pull` and a local file differs from the remote version:
 - If `sync-state.json` hash matches the local hash $\rightarrow$ The local copy is unmodified; safe to overwrite.
 - If `sync-state.json` hash does not match local hash $\rightarrow$ The local copy was modified. `pull` skips writing and prints `[CONFLICT]` to prevent data loss, unless the `--force` flag is specified.
 
-### 5.2 Push Command Conflicts
+### 5.4 Push Command Conflicts
 When running `push` and a local modification needs to go remote:
 - If `sync-state.json`'s `remoteUpdatedAt` matches the current remote updatedAt $\rightarrow$ Remote is unmodified; safe to update.
-- If `sync-state.json`'s `remoteUpdatedAt` does not match current remote updatedAt $\rightarrow$ Workflow was changed on the server by someone else. `push` aborts and outputs a conflict alert, bypassed only with `--force`.
+- If `sync-state.json`'s `remoteUpdatedAt` does not match current remote updatedAt $\rightarrow$ Workflow was changed on the server by someone else. `push` aborts and outputs a conflict alert with 3-way diff (if base cache exists), bypassed only with `--force`.
 
-### 5.3 Local JSON Conversion
+### 5.5 Local JSON Conversion
 Whenever a local workflow file ends with `.json`, execution of commands automatically triggers a conversion process:
 - Generates corresponding TypeScript SDK code.
 - Deletes the original `.json` file to prevent duplicate tracking or conflict.
 - Continues execution using the newly converted `.workflow.ts` file path.
 
-### 5.4 Inline Ignore Comments & Config
+### 5.6 Inline Ignore Comments & Config
 Workflows can be ignored from status, push synchronization, schema validation, and standards linting:
 - **Inline Comment:** Add `// n8ncli-ignore` or `// n8ncli-push-ignore` or `// n8n-cli-ignore` within the first 10 lines of the workflow file.
 - **Standards Config:** Add glob patterns/filenames under `ignore.workflows` in `n8n-standards.json`.
 - **Local Config:** Add glob patterns/filenames under `ignorePush` in `n8n/config/n8n-cli.json`.
 
-### 5.5 Differentiated Exit Codes
+### 5.7 Differentiated Exit Codes
 The CLI utilizes exit codes to allow programmatic integration with AI agents:
 - **`0`**: Successful command completion.
 - **`1`**: General runtime execution or connection error.

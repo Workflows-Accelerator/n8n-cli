@@ -164,6 +164,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 ### Syncing
 - \`n8ncli pull [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata, or simulate the pull without writing to disk.
 - \`n8ncli push [--force] [--dry-run]\`: Deploy local modifications and folder structures.
+- \`n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--foreground]\`: Start, stop, or inspect the live synchronization background daemon.
 - \`n8ncli status\`: List modified, untracked, deleted, or remote-only files.
 - \`n8ncli diff <file> [--semantic]\`: Show line diff of a local file against remote (use \`--semantic\` to ignore node coordinate/position differences).
 

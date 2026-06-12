@@ -4,7 +4,7 @@ import path from 'path';
 import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials, fetchWorkflowsPaginated } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
@@ -502,6 +502,7 @@ export function pullCommand(program: Command) {
                   if (!options.dryRun) {
                     fs.mkdirSync(targetDir, { recursive: true });
                     fs.writeFileSync(fullPath, tsCode, 'utf-8');
+                    saveWorkflowCache(repoRoot!, details.id, tsCode, localDir);
                     
                     syncState.workflows[relativePath] = {
                       id: details.id,
@@ -527,6 +528,9 @@ export function pullCommand(program: Command) {
                       remoteUpdatedAt: details.updatedAt || new Date().toISOString(),
                       folderId: wFolderId || undefined,
                     };
+                    if (!loadWorkflowCache(repoRoot!, details.id, localDir)) {
+                      saveWorkflowCache(repoRoot!, details.id, tsCode, localDir);
+                    }
                   }
                   unchangedCount++;
                 } else {
@@ -542,6 +546,7 @@ export function pullCommand(program: Command) {
                     if (!options.dryRun) {
                       fs.mkdirSync(targetDir, { recursive: true });
                       fs.writeFileSync(fullPath, tsCode, 'utf-8');
+                      saveWorkflowCache(repoRoot!, details.id, tsCode, localDir);
                       
                       delete syncState.workflows[stateEntry?.localPath || ''];
                       syncState.workflows[relativePath] = {
@@ -570,6 +575,7 @@ export function pullCommand(program: Command) {
                 if (fs.existsSync(fullPath)) {
                   if (!options.dryRun) {
                     fs.unlinkSync(fullPath);
+                    deleteWorkflowCache(repoRoot!, entry.id, localDir);
                   }
                   output.log(`  [CLEANUP] Deleted local file for out-of-scope/deleted workflow: ${relPath}${options.dryRun ? ' (dry-run)' : ''}`);
                   
@@ -623,6 +629,10 @@ export function pullCommand(program: Command) {
                     if (!id || !activeWorkflowIds.has(id)) {
                       if (!options.dryRun) {
                         fs.unlinkSync(fullPath);
+                        const entry = Object.values(syncState.workflows).find(e => e.id === id);
+                        if (entry) {
+                          deleteWorkflowCache(repoRoot!, entry.id, localDir);
+                        }
                       }
                       const rel = path.relative(localWorkflowsDir, fullPath);
                       output.log(`  [HARD CLEANUP] Deleted local file: ${rel}${options.dryRun ? ' (dry-run)' : ''}`);

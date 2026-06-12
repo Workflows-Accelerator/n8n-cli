@@ -9,6 +9,37 @@ export interface SyncWorkflowEntry {
   contentHash: string;     // hash of local file content
   remoteUpdatedAt: string; // remote updatedAt ISO timestamp
   folderId?: string;
+  conflict?: boolean;      // flag to indicate conflict/locked status in live sync or pushes
+}
+
+export function getCacheFilePath(repoRoot: string, workflowId: string, localDir: string = 'n8n'): string {
+  return path.join(repoRoot, localDir, 'config', 'cache', 'workflows', `${workflowId}.workflow.ts`);
+}
+
+export function saveWorkflowCache(repoRoot: string, workflowId: string, content: string, localDir: string = 'n8n') {
+  const filePath = getCacheFilePath(repoRoot, workflowId, localDir);
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(filePath, content, 'utf-8');
+}
+
+export function loadWorkflowCache(repoRoot: string, workflowId: string, localDir: string = 'n8n'): string | null {
+  const filePath = getCacheFilePath(repoRoot, workflowId, localDir);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  return fs.readFileSync(filePath, 'utf-8');
+}
+
+export function deleteWorkflowCache(repoRoot: string, workflowId: string, localDir: string = 'n8n') {
+  const filePath = getCacheFilePath(repoRoot, workflowId, localDir);
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (e) {}
+  }
 }
 
 export interface SyncState {

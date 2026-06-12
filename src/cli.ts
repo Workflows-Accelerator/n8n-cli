@@ -23,6 +23,7 @@ import { importSkillCommand } from './commands/import-skill.js';
 import { lintCommand } from './commands/lint.js';
 import { standardsCommand } from './commands/standards.js';
 import { layoutCommand } from './commands/layout.js';
+import { liveCommand } from './commands/live.js';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +69,7 @@ importSkillCommand(program);
 lintCommand(program);
 standardsCommand(program);
 layoutCommand(program);
+liveCommand(program);
 
 
 // Parse arguments asynchronously

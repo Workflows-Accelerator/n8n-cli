@@ -5,7 +5,8 @@ import { glob } from 'glob';
 import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
+import { showConflictDiff } from './diff.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
@@ -534,6 +535,7 @@ export function pushCommand(program: Command) {
                 workflowId: entry.id,
               });
               delete syncState.workflows[relPath];
+              deleteWorkflowCache(repoRoot, entry.id, localDir);
             } catch (err) {
               output.error(`Failed to archive workflow '${entry.name}': ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -678,6 +680,7 @@ export function pushCommand(program: Command) {
                   remoteUpdatedAt: new Date().toISOString(),
                   folderId: isMove ? newFolderId : oldFolderId,
                 };
+                saveWorkflowCache(repoRoot, rename.id, code, localDir);
 
                 if (isMove) {
                   output.log(`  [MOVED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
@@ -733,6 +736,7 @@ export function pushCommand(program: Command) {
                 remoteUpdatedAt: new Date().toISOString(),
                 folderId: targetFolderId,
               };
+              saveWorkflowCache(repoRoot, newId, code, localDir);
               output.log(`  [CREATED] ${relPath} (ID: ${newId})`);
             } catch (err) {
               output.error(`Failed to create workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
@@ -747,13 +751,14 @@ export function pushCommand(program: Command) {
 
             try {
               let conflict = false;
+              let remoteDetails: any = null;
               if (!options.force) {
                 try {
                   const remoteDetailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
                     workflowId: entry.id,
                     id: entry.id,
                   });
-                  const remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
+                  remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
                   
                   if (remoteDetails.updatedAt && entry.remoteUpdatedAt !== remoteDetails.updatedAt) {
                     conflict = true;
@@ -766,6 +771,15 @@ export function pushCommand(program: Command) {
               if (conflict) {
                 output.warn(`  [CONFLICT] Workflow '${name}' has been modified on remote since last pull. Skipping. Use --force to overwrite remote changes.`);
                 hasConflicts = true;
+                
+                const baseCode = loadWorkflowCache(repoRoot, entry.id, localDir);
+                const localCode = localCodes[relPath];
+                const remoteCode = remoteDetails ? generateWorkflowCode(remoteDetails) : '';
+                if (baseCode && remoteCode) {
+                  showConflictDiff(relPath, baseCode, localCode, remoteCode);
+                } else {
+                  output.warn(`  (Cannot show 3-way diff because cached base version is missing. Direct local vs remote diff can be run with 'n8ncli diff ${relPath}')`);
+                }
                 continue;
               }
 
@@ -889,13 +903,16 @@ export function pushCommand(program: Command) {
                 }
               }
 
-              syncState.workflows[finalRelPath] = {
+              const updatedEntry = {
                 ...entry,
                 name,
                 localPath: finalRelPath,
                 contentHash: localHashes[relPath],
                 remoteUpdatedAt: new Date().toISOString(),
               };
+              delete updatedEntry.conflict;
+              syncState.workflows[finalRelPath] = updatedEntry;
+              saveWorkflowCache(repoRoot, entry.id, code, localDir);
               output.log(`  [UPDATED] ${finalRelPath}`);
             } catch (err) {
               output.error(`Failed to update workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
