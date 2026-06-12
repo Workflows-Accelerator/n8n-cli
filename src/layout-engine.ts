@@ -335,6 +335,8 @@ function computeNodeSizes(nodes: any[], connections: any): Map<string, { width: 
 /**
  * Layout the workflow JSON.
  */
+const alignedPredecessorMap = new Map<string, string>();
+
 // Helper to recursively shift a node, all its downstream successors, and its single-output predecessors (maintaining branch structure and alignment)
 export function shiftNodeSubtreeAndPredecessors(
   currName: string,
@@ -344,7 +346,8 @@ export function shiftNodeSubtreeAndPredecessors(
   connsObj: any,
   branchNodes: string[],
   infoMap: Map<string, any>,
-  visitedNodes = new Set<string>()
+  visitedNodes = new Set<string>(),
+  direction: 'up' | 'down' | 'both' = 'both'
 ) {
   if (visitedNodes.has(currName)) return;
   visitedNodes.add(currName);
@@ -356,29 +359,32 @@ export function shiftNodeSubtreeAndPredecessors(
   }
 
   // 1. Shift downstream successors (all of them, excluding backwards/feedback edges)
-  const outputsObj = connsObj[currName];
-  if (outputsObj) {
-    for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
-      if (!destGroups) continue;
-      for (const group of destGroups) {
-        if (!group) continue;
-        for (const conn of group) {
-          if (conn && conn.node && branchNodes.includes(conn.node) && !childToParentMap.has(conn.node)) {
-            const posCurr = positionsMap.get(currName);
-            const posDest = positionsMap.get(conn.node);
-            if (posCurr && posDest && posDest[0] <= posCurr[0]) {
-              continue; // Skip feedback edge (upstream target) to prevent cycles
+  if (direction === 'both' || direction === 'down') {
+    const outputsObj = connsObj[currName];
+    if (outputsObj) {
+      for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+        if (!destGroups) continue;
+        for (const group of destGroups) {
+          if (!group) continue;
+          for (const conn of group) {
+            if (conn && conn.node && branchNodes.includes(conn.node) && !childToParentMap.has(conn.node)) {
+              const posCurr = positionsMap.get(currName);
+              const posDest = positionsMap.get(conn.node);
+              if (posCurr && posDest && posDest[0] <= posCurr[0]) {
+                continue; // Skip feedback edge (upstream target) to prevent cycles
+              }
+              shiftNodeSubtreeAndPredecessors(
+                conn.node,
+                shiftVal,
+                positionsMap,
+                childToParentMap,
+                connsObj,
+                branchNodes,
+                infoMap,
+                visitedNodes,
+                'down'
+              );
             }
-            shiftNodeSubtreeAndPredecessors(
-              conn.node,
-              shiftVal,
-              positionsMap,
-              childToParentMap,
-              connsObj,
-              branchNodes,
-              infoMap,
-              visitedNodes
-            );
           }
         }
       }
@@ -386,35 +392,34 @@ export function shiftNodeSubtreeAndPredecessors(
   }
 
   // 2. Shift upstream single-output predecessors (recursively)
-  // Only propagate shifts upstream if the current node has at most 1 incoming connection in the branch.
-  // This prevents merge nodes from shifting unrelated branches upstream.
-  let incomingCount = 0;
-  for (const predName of branchNodes) {
-    if (predName === currName || childToParentMap.has(predName)) continue;
-    const predOutputs = connsObj[predName];
-    if (predOutputs) {
-      let connectsToCurr = false;
-      for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
-        if (!dGroups) continue;
-        for (const grp of dGroups) {
-          if (!grp) continue;
-          for (const c of grp) {
-            if (c && c.node === currName) {
-              connectsToCurr = true;
-              break;
+  if (direction === 'both' || direction === 'up') {
+    // Count total incoming connections to currName
+    let incomingCount = 0;
+    for (const predName of branchNodes) {
+      if (predName === currName || childToParentMap.has(predName)) continue;
+      const predOutputs = connsObj[predName];
+      if (predOutputs) {
+        let connectsToCurr = false;
+        for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+          if (!dGroups) continue;
+          for (const grp of dGroups) {
+            if (!grp) continue;
+            for (const c of grp) {
+              if (c && c.node === currName) {
+                connectsToCurr = true;
+                break;
+              }
             }
+            if (connectsToCurr) break;
           }
           if (connectsToCurr) break;
         }
-        if (connectsToCurr) break;
-      }
-      if (connectsToCurr) {
-        incomingCount++;
+        if (connectsToCurr) {
+          incomingCount++;
+        }
       }
     }
-  }
 
-  if (incomingCount <= 1) {
     for (const predName of branchNodes) {
       if (predName === currName || childToParentMap.has(predName)) continue;
       const predOutputs = connsObj[predName];
@@ -437,16 +442,26 @@ export function shiftNodeSubtreeAndPredecessors(
         }
 
         if (connectsToCurr && totalOutputs === 1) {
-          shiftNodeSubtreeAndPredecessors(
-            predName,
-            shiftVal,
-            positionsMap,
-            childToParentMap,
-            connsObj,
-            branchNodes,
-            infoMap,
-            visitedNodes
-          );
+          // If the current node is a merge point (incomingCount > 1), only shift this predecessor
+          // if it is specifically registered as the aligned predecessor.
+          let isAllowed = true;
+          if (incomingCount > 1) {
+            isAllowed = (alignedPredecessorMap.get(currName) === predName);
+          }
+
+          if (isAllowed) {
+            shiftNodeSubtreeAndPredecessors(
+              predName,
+              shiftVal,
+              positionsMap,
+              childToParentMap,
+              connsObj,
+              branchNodes,
+              infoMap,
+              visitedNodes,
+              'up'
+            );
+          }
         }
       }
     }
@@ -454,6 +469,7 @@ export function shiftNodeSubtreeAndPredecessors(
 }
 
 export async function layoutWorkflow(workflowJson: any, options: LayoutOptions = {}): Promise<any> {
+  alignedPredecessorMap.clear();
   // Try to load sqlite nodes db
   await loadNodesDatabase();
 
@@ -1015,18 +1031,50 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
           const hasMultipleIncoming = forwardIncoming.length > 1;
 
           let isAllowedProp = !hasMultipleIncoming;
-          if (hasMultipleIncoming && options.alignment === 'top') {
-            const sortedIncoming = [...forwardIncoming].sort((a, b) => {
-              const posA = branchPositions.get(a) || [0, 0];
-              const posB = branchPositions.get(b) || [0, 0];
-              return posA[1] - posB[1];
-            });
-            if (sortedIncoming[0] === nodeName) {
+          if (hasMultipleIncoming) {
+            // Find all single-output forward predecessors of targetName
+            const singleOutputPreds = [];
+            for (const predName of forwardIncoming) {
+              const predOutputs = connections[predName];
+              if (predOutputs) {
+                let forwardOutputsCount = 0;
+                for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+                  if (!dGroups) continue;
+                  for (const grp of dGroups) {
+                    if (!grp) continue;
+                    for (const c of grp) {
+                      if (c && c.node && branch.includes(c.node) && !childToParent.has(c.node)) {
+                        const posPred = branchPositions.get(predName);
+                        const posDest = branchPositions.get(c.node);
+                        if (posPred && posDest && posPred[0] < posDest[0]) {
+                          forwardOutputsCount++;
+                        }
+                      }
+                    }
+                  }
+                }
+                if (forwardOutputsCount === 1) {
+                  singleOutputPreds.push(predName);
+                }
+              }
+            }
+
+            if (singleOutputPreds.length === 1 && singleOutputPreds[0] === nodeName) {
               isAllowedProp = true;
+            } else if (options.alignment === 'top') {
+              const sortedIncoming = [...forwardIncoming].sort((a, b) => {
+                const posA = branchPositions.get(a) || [0, 0];
+                const posB = branchPositions.get(b) || [0, 0];
+                return posA[1] - posB[1];
+              });
+              if (sortedIncoming[0] === nodeName) {
+                isAllowedProp = true;
+              }
             }
           }
 
           if (!isBypassSideNode && isAllowedProp) {
+            alignedPredecessorMap.set(targetName, nodeName);
             const targetPos = branchPositions.get(targetName);
             const targetInfo = nodeInfoMap.get(targetName);
             const currentInfo = nodeInfoMap.get(nodeName);
@@ -1171,22 +1219,55 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         return posPred && posTarget && posPred[0] < posTarget[0];
       });
       if (forwardIncoming.length > 1) {
-        let alignPredName = '';
-        if (options.alignment === 'top') {
-          // Sort incoming predecessors by Y coordinate to find the top-most one
-          const sortedIncoming = [...forwardIncoming].sort((a, b) => {
-            const posA = branchPositions.get(a) || [0, 0];
-            const posB = branchPositions.get(b) || [0, 0];
-            return posA[1] - posB[1];
-          });
-          alignPredName = sortedIncoming[0];
+        // Check if there is a unique single-output forward predecessor
+        const singleOutputPreds = [];
+        for (const predName of forwardIncoming) {
+          const predOutputs = connections[predName];
+          if (predOutputs) {
+            let forwardOutputsCount = 0;
+            for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+              if (!dGroups) continue;
+              for (const grp of dGroups) {
+                if (!grp) continue;
+                for (const c of grp) {
+                  if (c && c.node && branch.includes(c.node) && !childToParent.has(c.node)) {
+                    const posPred = branchPositions.get(predName);
+                    const posDest = branchPositions.get(c.node);
+                    if (posPred && posDest && posPred[0] < posDest[0]) {
+                      forwardOutputsCount++;
+                    }
+                  }
+                }
+              }
+            }
+            if (forwardOutputsCount === 1) {
+              singleOutputPreds.push(predName);
+            }
+          }
         }
 
         let targetY = 0;
         let hasValidTarget = false;
 
-        if (options.alignment === 'top') {
+        if (singleOutputPreds.length === 1) {
+          // Align merge node with the unique single-output predecessor
+          const alignPredName = singleOutputPreds[0];
+          alignedPredecessorMap.set(nodeName, alignPredName);
+          const predPos = branchPositions.get(alignPredName);
+          const predInfo = nodeInfoMap.get(alignPredName);
+          if (predPos && predInfo) {
+            targetY = predPos[1] + predInfo.height / 2;
+            hasValidTarget = true;
+          }
+        } else if (options.alignment === 'top') {
           // Align merge node with top-most predecessor
+          const sortedIncoming = [...forwardIncoming].sort((a, b) => {
+            const posA = branchPositions.get(a) || [0, 0];
+            const posB = branchPositions.get(b) || [0, 0];
+            return posA[1] - posB[1];
+          });
+          const alignPredName = sortedIncoming[0];
+          alignedPredecessorMap.set(nodeName, alignPredName);
           const predPos = branchPositions.get(alignPredName);
           const predInfo = nodeInfoMap.get(alignPredName);
           if (predPos && predInfo) {
@@ -1226,7 +1307,9 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
                 childToParent,
                 connections,
                 branch,
-                nodeInfoMap
+                nodeInfoMap,
+                new Set<string>(),
+                'down'
               );
             }
           }
