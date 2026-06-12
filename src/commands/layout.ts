@@ -63,7 +63,7 @@ export function layoutCommand(program: Command) {
 
         const layoutConfig = (config as any).layout || {};
         const grid = options.grid !== undefined ? parseInt(options.grid, 10) : (layoutConfig.grid !== undefined ? layoutConfig.grid : 20);
-        const nodesep = options.nodesep !== undefined ? parseInt(options.nodesep, 10) : (layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (4 * grid));
+        const nodesep = options.nodesep !== undefined ? parseInt(options.nodesep, 10) : (layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid));
         const ranksep = options.ranksep !== undefined ? parseInt(options.ranksep, 10) : (layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid));
 
         const alignTerminalNodes = options.alignTerminalNodes !== undefined
