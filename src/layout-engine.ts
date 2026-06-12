@@ -244,6 +244,20 @@ function computeNodeSizes(nodes: any[], connections: any): Map<string, { width: 
       connectedOutputsMap.get(node.name) || new Set()
     );
 
+    // Adjust outputs array based on the actual number of connected main output ports
+    const nodeConns = connections[node.name];
+    if (nodeConns && Array.isArray(nodeConns.main)) {
+      const activePortsCount = nodeConns.main.length;
+      const mainCount = outputs.filter(o => o === 'main').length;
+      if (activePortsCount > mainCount) {
+        const filteredOutputs = outputs.filter(o => o !== 'main');
+        for (let i = 0; i < activePortsCount; i++) {
+          filteredOutputs.push('main');
+        }
+        outputs.splice(0, outputs.length, ...filteredOutputs);
+      }
+    }
+
     const isDynamic = typeof inputs === 'string' || typeof outputs === 'string';
     const hasInputs = inputs.length > 0;
     const hasOutputs = outputs.length > 0;
@@ -571,26 +585,68 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         if (targetsInfo.length > 1) {
           console.log(`[ALIGN ENGINE] "${nodeName}": Targets before alignment:`, JSON.stringify(targetsInfo));
           
-          // Sort target Y coordinates in ascending order
-          const sortedY = targetsInfo.map(t => t.y).sort((a, b) => a - b);
-          console.log(`[ALIGN ENGINE] sortedY (raw):`, sortedY);
-          
-          // Enforce minimum separation between adjacent Y coordinates (height of previous node + nodesep)
-          for (let idx = 1; idx < sortedY.length; idx++) {
-            const prevTarget = targetsInfo[idx - 1];
-            const prevInfo = nodeInfoMap.get(prevTarget.node);
-            const minSep = (prevInfo?.height || 96) + nodesep;
-            if (sortedY[idx] < sortedY[idx - 1] + minSep) {
-              sortedY[idx] = sortedY[idx - 1] + minSep;
-            }
-          }
-          console.log(`[ALIGN ENGINE] sortedY (separated):`, sortedY);
-
-          // Sort targets by index (port order)
-          targetsInfo.sort((a, b) => a.index - b.index);
-
-          // Get downstream nodes for each target
+          // Check if this is a split-merge bypass structure
+          // A bypass structure exists if one target connects to another target in targetsInfo.
+          let bypassSourceIdx = -1;
+          let bypassTargetIdx = -1;
           const targetSubtrees = targetsInfo.map(t => getDownstreamNodes(t.node, branch, nodeName));
+
+          for (let i = 0; i < targetsInfo.length; i++) {
+            for (let j = 0; j < targetsInfo.length; j++) {
+              if (i !== j) {
+                // Does target i reach target j?
+                if (targetSubtrees[i].has(targetsInfo[j].node)) {
+                  bypassSourceIdx = i;
+                  bypassTargetIdx = j;
+                  break;
+                }
+              }
+            }
+            if (bypassSourceIdx !== -1) break;
+          }
+
+          let sortedY: number[] = [];
+          if (bypassSourceIdx !== -1 && bypassTargetIdx !== -1) {
+            const splitNodePos = branchPositions.get(nodeName)!;
+            const splitY = splitNodePos[1];
+            const sideInfo = nodeInfoMap.get(targetsInfo[bypassSourceIdx].node);
+            const sideHeight = sideInfo?.height || 96;
+            const offset = sideHeight + nodesep;
+            
+            const newY_merge = splitY;
+            const newY_side = bypassSourceIdx < bypassTargetIdx ? splitY - offset : splitY + offset;
+            
+            sortedY = [];
+            for (let idx = 0; idx < targetsInfo.length; idx++) {
+              if (idx === bypassSourceIdx) {
+                sortedY.push(newY_side);
+              } else if (idx === bypassTargetIdx) {
+                sortedY.push(newY_merge);
+              } else {
+                sortedY.push(splitY + (idx - bypassTargetIdx) * offset);
+              }
+            }
+            console.log(`[ALIGN ENGINE] Bypass detected for "${nodeName}". Manual Y mapping:`, sortedY);
+            // Since we manually mapped sortedY to ports, we must ensure targetsInfo is sorted by index
+            targetsInfo.sort((a, b) => a.index - b.index);
+          } else {
+            // Sort target Y coordinates in ascending order
+            const tempSortedY = targetsInfo.map(t => t.y).sort((a, b) => a - b);
+            
+            // Enforce minimum separation between adjacent Y coordinates (height of previous node + nodesep)
+            for (let idx = 1; idx < tempSortedY.length; idx++) {
+              const prevTarget = targetsInfo[idx - 1];
+              const prevInfo = nodeInfoMap.get(prevTarget.node);
+              const minSep = (prevInfo?.height || 96) + nodesep;
+              if (tempSortedY[idx] < tempSortedY[idx - 1] + minSep) {
+                tempSortedY[idx] = tempSortedY[idx - 1] + minSep;
+              }
+            }
+            sortedY = tempSortedY;
+            
+            // Sort targets by index (port order)
+            targetsInfo.sort((a, b) => a.index - b.index);
+          }
 
           // Assign new Y positions and shift subtrees
           for (let i = 0; i < targetsInfo.length; i++) {
@@ -607,8 +663,12 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
                 let isShared = false;
                 for (let j = 0; j < targetsInfo.length; j++) {
                   if (j !== i && targetSubtrees[j].has(u)) {
-                    isShared = true;
-                    break;
+                    // Only count as shared if target i is not downstream of target j (merge-aware)
+                    const targetIDownstreamOfJ = targetSubtrees[j].has(t.node);
+                    if (!targetIDownstreamOfJ) {
+                      isShared = true;
+                      break;
+                    }
                   }
                 }
                 if (!isShared) {
@@ -630,6 +690,8 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         }
       }
     }
+
+
 
     // Align terminal/end nodes vertically with their closest predecessor in the branch
     if (options.alignTerminalNodes !== false) {
@@ -699,6 +761,144 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
               const predPos = branchPositions.get(bestPred)!;
               terminalPos[1] = predPos[1];
               branchPositions.set(nodeName, terminalPos);
+            }
+          }
+        }
+      }
+    }
+
+    // Backward propagation pass: align single-output nodes with their target (excluding bypass side-nodes)
+    const sortedNodesReverse = [...branch].sort((a, b) => {
+      const posA = branchPositions.get(a) || [0, 0];
+      const posB = branchPositions.get(b) || [0, 0];
+      return posB[0] - posA[0];
+    });
+
+    for (const nodeName of sortedNodesReverse) {
+      if (childToParent.has(nodeName)) continue;
+      const outputsObj = connections[nodeName];
+      if (outputsObj) {
+        const targets: string[] = [];
+        for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+          if (!destGroups) continue;
+          for (const group of destGroups) {
+            if (!group) continue;
+            for (const conn of group) {
+              if (conn && conn.node && branch.includes(conn.node) && !childToParent.has(conn.node)) {
+                if (!targets.includes(conn.node)) {
+                  targets.push(conn.node);
+                }
+              }
+            }
+          }
+        }
+
+        if (targets.length === 1) {
+          const targetName = targets[0];
+          
+          // Check if this node is a side-node in a split-merge bypass
+          let isBypassSideNode = false;
+          for (const pName of branch) {
+            if (pName === nodeName || childToParent.has(pName)) continue;
+            const pOutputs = connections[pName];
+            let connectsToA = false;
+            let connectsToB = false;
+            if (pOutputs) {
+              for (const dGroups of Object.values(pOutputs as Record<string, any[][]>)) {
+                if (!dGroups) continue;
+                for (const grp of dGroups) {
+                  if (!grp) continue;
+                  for (const c of grp) {
+                    if (c && c.node === nodeName) connectsToA = true;
+                    if (c && c.node === targetName) connectsToB = true;
+                  }
+                }
+              }
+            }
+            if (connectsToA && connectsToB) {
+              isBypassSideNode = true;
+              break;
+            }
+          }
+
+          if (!isBypassSideNode) {
+            const targetPos = branchPositions.get(targetName);
+            const targetInfo = nodeInfoMap.get(targetName);
+            const currentInfo = nodeInfoMap.get(nodeName);
+            if (targetPos && targetInfo && currentInfo) {
+              const targetCenterY = targetPos[1] + targetInfo.height / 2;
+              const newY = targetCenterY - currentInfo.height / 2;
+              const pos = branchPositions.get(nodeName);
+              if (pos) {
+                pos[1] = newY;
+                branchPositions.set(nodeName, pos);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Centering pass for multi-output nodes (e.g. IF/Switch nodes)
+    for (const nodeName of branch) {
+      if (childToParent.has(nodeName)) continue;
+      const outputsObj = connections[nodeName];
+      if (outputsObj) {
+        const targets: string[] = [];
+        for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+          if (!destGroups) continue;
+          for (const group of destGroups) {
+            if (!group) continue;
+            for (const conn of group) {
+              if (conn && conn.node && branch.includes(conn.node) && !childToParent.has(conn.node)) {
+                if (!targets.includes(conn.node)) {
+                  targets.push(conn.node);
+                }
+              }
+            }
+          }
+        }
+
+        if (targets.length > 1) {
+          // Check if this node is a split node of a bypass structure
+          let isBypassSplit = false;
+          for (let i = 0; i < targets.length; i++) {
+            for (let j = 0; j < targets.length; j++) {
+              if (i !== j) {
+                const subtreeI = getDownstreamNodes(targets[i], branch, nodeName);
+                if (subtreeI.has(targets[j])) {
+                  isBypassSplit = true;
+                  break;
+                }
+              }
+            }
+            if (isBypassSplit) break;
+          }
+
+          if (!isBypassSplit) {
+            let sumCenterY = 0;
+            let validTargets = 0;
+            for (const targetName of targets) {
+              const targetPos = branchPositions.get(targetName);
+              const targetInfo = nodeInfoMap.get(targetName);
+              if (targetPos && targetInfo) {
+                const targetCenterY = targetPos[1] + targetInfo.height / 2;
+                sumCenterY += targetCenterY;
+                validTargets++;
+              }
+            }
+
+            if (validTargets > 0) {
+              const avgCenterY = sumCenterY / validTargets;
+              const predInfo = nodeInfoMap.get(nodeName);
+              if (predInfo) {
+                const newY = avgCenterY - predInfo.height / 2;
+                const pos = branchPositions.get(nodeName);
+                if (pos) {
+                  pos[1] = newY;
+                  branchPositions.set(nodeName, pos);
+                }
+              }
             }
           }
         }
@@ -786,6 +986,8 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         branchPositions.set(nodeName, [pos[0] - minX, pos[1] - minY]);
       }
     }
+
+
 
     // Find original center and top-left bounding box
     let origSumX = 0;
