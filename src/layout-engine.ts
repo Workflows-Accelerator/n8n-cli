@@ -507,43 +507,124 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
       branchPositions.set(nodeName, [x, y]);
     }
 
-    // Post-process to align vertical ordering of targets with port index order (e.g. IF/Switch outputs)
-    for (let pass = 0; pass < 3; pass++) {
-      for (const nodeName of branch) {
-        if (childToParent.has(nodeName)) continue;
-        const outputsObj = connections[nodeName];
-        if (outputsObj && outputsObj.main) {
-          const mainOutputs = outputsObj.main as any[][];
-          const targetsInfo: Array<{ node: string; y: number; index: number }> = [];
-          for (let i = 0; i < mainOutputs.length; i++) {
-            const group = mainOutputs[i];
-            if (group && group.length > 0) {
-              const targetNode = group[0].node;
-              if (branch.includes(targetNode) && !childToParent.has(targetNode) && branchPositions.has(targetNode)) {
-                targetsInfo.push({
-                  node: targetNode,
-                  y: branchPositions.get(targetNode)![1],
-                  index: i
-                });
+    console.log("[SWAP ENGINE] Raw Dagre positions in branchPositions:");
+    for (const [nodeName, pos] of branchPositions.entries()) {
+      console.log(`  - ${nodeName.padEnd(45)}: [${pos[0]}, ${pos[1]}]`);
+    }
+
+    const getDownstreamNodes = (startNode: string, branchNodes: string[], parent: string): Set<string> => {
+      const visited = new Set<string>();
+      const q = [startNode];
+      visited.add(startNode);
+      while (q.length > 0) {
+        const curr = q.shift()!;
+        const outputsObj = connections[curr];
+        if (outputsObj) {
+          for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+            if (!destGroups) continue;
+            for (const group of destGroups) {
+              if (!group) continue;
+              for (const conn of group) {
+                if (conn && conn.node && branchNodes.includes(conn.node) && conn.node !== parent && !childToParent.has(conn.node)) {
+                  if (!visited.has(conn.node)) {
+                    visited.add(conn.node);
+                    q.push(conn.node);
+                  }
+                }
               }
             }
           }
+        }
+      }
+      return visited;
+    };
 
+    // Sort branch nodes by X coordinate (upstream first)
+    const sortedBranchNodes = [...branch].sort((a, b) => {
+      const posA = branchPositions.get(a) || [0, 0];
+      const posB = branchPositions.get(b) || [0, 0];
+      return posA[0] - posB[0];
+    });
+
+    // Post-process to align vertical ordering of targets with port index order (e.g. IF/Switch outputs)
+    const nodesep = options.nodesep || 50;
+    for (const nodeName of sortedBranchNodes) {
+      if (childToParent.has(nodeName)) continue;
+      const outputsObj = connections[nodeName];
+      if (outputsObj && outputsObj.main) {
+        const mainOutputs = outputsObj.main as any[][];
+        const targetsInfo: Array<{ node: string; y: number; index: number }> = [];
+        for (let i = 0; i < mainOutputs.length; i++) {
+          const group = mainOutputs[i];
+          if (group && group.length > 0) {
+            const targetNode = group[0].node;
+            if (branch.includes(targetNode) && !childToParent.has(targetNode) && branchPositions.has(targetNode)) {
+              targetsInfo.push({
+                node: targetNode,
+                y: branchPositions.get(targetNode)![1],
+                index: i
+              });
+            }
+          }
+        }
+
+        if (targetsInfo.length > 1) {
+          console.log(`[ALIGN ENGINE] "${nodeName}": Targets before alignment:`, JSON.stringify(targetsInfo));
+          
+          // Sort target Y coordinates in ascending order
+          const sortedY = targetsInfo.map(t => t.y).sort((a, b) => a - b);
+          console.log(`[ALIGN ENGINE] sortedY (raw):`, sortedY);
+          
+          // Enforce minimum separation between adjacent Y coordinates (height of previous node + nodesep)
+          for (let idx = 1; idx < sortedY.length; idx++) {
+            const prevTarget = targetsInfo[idx - 1];
+            const prevInfo = nodeInfoMap.get(prevTarget.node);
+            const minSep = (prevInfo?.height || 96) + nodesep;
+            if (sortedY[idx] < sortedY[idx - 1] + minSep) {
+              sortedY[idx] = sortedY[idx - 1] + minSep;
+            }
+          }
+          console.log(`[ALIGN ENGINE] sortedY (separated):`, sortedY);
+
+          // Sort targets by index (port order)
+          targetsInfo.sort((a, b) => a.index - b.index);
+
+          // Get downstream nodes for each target
+          const targetSubtrees = targetsInfo.map(t => getDownstreamNodes(t.node, branch, nodeName));
+
+          // Assign new Y positions and shift subtrees
           for (let i = 0; i < targetsInfo.length; i++) {
-            for (let j = i + 1; j < targetsInfo.length; j++) {
-              const tA = targetsInfo[i];
-              const tB = targetsInfo[j];
-              if (tA.index < tB.index && tA.y > tB.y) {
-                const posA = branchPositions.get(tA.node)!;
-                const posB = branchPositions.get(tB.node)!;
-                const tempY = posA[1];
-                posA[1] = posB[1];
-                posB[1] = tempY;
-                branchPositions.set(tA.node, posA);
-                branchPositions.set(tB.node, posB);
-                tA.y = posA[1];
-                tB.y = posB[1];
+            const t = targetsInfo[i];
+            const newY = sortedY[i];
+            const diff = newY - t.y;
+            console.log(`[ALIGN ENGINE] Target ${t.node} (idx ${t.index}): oldY = ${t.y}, newY = ${newY}, diff = ${diff}`);
+            if (diff !== 0) {
+              const subtree = targetSubtrees[i];
+              
+              // Find nodes unique to this subtree (not in other target subtrees)
+              const uniqueSubtree = new Set<string>();
+              for (const u of subtree) {
+                let isShared = false;
+                for (let j = 0; j < targetsInfo.length; j++) {
+                  if (j !== i && targetSubtrees[j].has(u)) {
+                    isShared = true;
+                    break;
+                  }
+                }
+                if (!isShared) {
+                  uniqueSubtree.add(u);
+                }
               }
+
+              // Shift unique nodes
+              for (const u of uniqueSubtree) {
+                const pos = branchPositions.get(u);
+                if (pos) {
+                  pos[1] += diff;
+                  branchPositions.set(u, pos);
+                }
+              }
+              t.y = newY;
             }
           }
         }
@@ -593,10 +674,32 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
           }
           
           if (bestPred && branchPositions.has(bestPred)) {
-            const terminalPos = branchPositions.get(nodeName)!;
-            const predPos = branchPositions.get(bestPred)!;
-            terminalPos[1] = predPos[1];
-            branchPositions.set(nodeName, terminalPos);
+            const predInfo = nodeInfoMap.get(bestPred);
+            const predOutputs = connections[bestPred];
+            
+            // Count total downstream targets of the predecessor
+            let targetCount = 0;
+            if (predOutputs) {
+              for (const destGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+                if (!destGroups) continue;
+                for (const group of destGroups) {
+                  if (!group) continue;
+                  for (const conn of group) {
+                    if (conn && conn.node) {
+                      targetCount++;
+                    }
+                  }
+                }
+              }
+            }
+
+            const isMultiOutput = predInfo && (predInfo.outputs.length > 1 || targetCount > 1);
+            if (!isMultiOutput) {
+              const terminalPos = branchPositions.get(nodeName)!;
+              const predPos = branchPositions.get(bestPred)!;
+              terminalPos[1] = predPos[1];
+              branchPositions.set(nodeName, terminalPos);
+            }
           }
         }
       }
