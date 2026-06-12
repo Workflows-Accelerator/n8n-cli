@@ -248,7 +248,7 @@ n8ncli lint [--fix] [--only-modified]
 
 ### `n8ncli layout`
 ```bash
-n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--dry-run]
+n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]
 ```
 - Auto-positions nodes in local `.workflow.ts` files using the Dagre layout engine.
 - Automatically resolves sizes for standard nodes, triggers, sticky notes, flex nodes, and AI clusters or sub-clusters based on their port signatures.
@@ -259,6 +259,7 @@ n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-a
 - **`--no-align-terminal-nodes`**: Disables the vertical alignment of terminal nodes with their closest predecessors.
 - **`--subnode-sep <px>`**: Specifies vertical spacing between a parent node and its subnodes (defaults to `layout.subnodeSep` or dynamically computed as `ranksep + 2 * grid`).
 - **`--subnode-horizontal-sep <px>`**: Specifies horizontal spacing between subnodes (defaults to `layout.subnodeHorizontalSep` or dynamically computed as `4 * grid`).
+- **`--alignment <mode>`**: Specifies branch alignment method (`center` or `top`, defaults to `layout.alignment` in `n8n-cli.json` or `center`). `top` alignment aligns the first branch of a split node to the vertical level of the split node and cascades subsequent branches downwards.
 - **`--dry-run`**: Simulates the auto-positioning without modifying the file.
 
 ### Local Layout Config Example (`n8n-cli.json`):
@@ -270,7 +271,8 @@ n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-a
     "ranksep": 120,
     "alignTerminalNodes": true,
     "subnodeSep": 160,
-    "subnodeHorizontalSep": 80
+    "subnodeHorizontalSep": 80,
+    "alignment": "top"
   }
 }
 ```

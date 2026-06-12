@@ -1,6 +1,6 @@
 {
   "name": "@workflows-accelerator/n8n-cli",
-  "version": "1.2.11",
+  "version": "1.2.14",
   "description": "AI-First n8n Workflow CLI",
   "type": "module",
   "main": "./dist/cli.js",

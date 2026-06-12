@@ -570,16 +570,21 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
       if (outputsObj && outputsObj.main) {
         const mainOutputs = outputsObj.main as any[][];
         const targetsInfo: Array<{ node: string; y: number; index: number }> = [];
+        let targetIdx = 0;
         for (let i = 0; i < mainOutputs.length; i++) {
           const group = mainOutputs[i];
-          if (group && group.length > 0) {
-            const targetNode = group[0].node;
-            if (branch.includes(targetNode) && !childToParent.has(targetNode) && branchPositions.has(targetNode)) {
-              targetsInfo.push({
-                node: targetNode,
-                y: branchPositions.get(targetNode)![1],
-                index: i
-              });
+          if (group) {
+            for (const conn of group) {
+              if (conn && conn.node) {
+                const targetNode = conn.node;
+                if (branch.includes(targetNode) && !childToParent.has(targetNode) && branchPositions.has(targetNode)) {
+                  targetsInfo.push({
+                    node: targetNode,
+                    y: branchPositions.get(targetNode)![1],
+                    index: targetIdx++
+                  });
+                }
+              }
             }
           }
         }
@@ -650,18 +655,29 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             const splitHeight = splitInfo?.height || 96;
             const targetCenterY = splitNodePos[1] + splitHeight / 2;
 
-            let sumTargetCenterY = 0;
-            for (let idx = 0; idx < targetsInfo.length; idx++) {
-              const targetNode = targetsInfo[idx].node;
-              const targetInfo = nodeInfoMap.get(targetNode);
-              const targetHeight = targetInfo?.height || 96;
-              sumTargetCenterY += tempSortedY[idx] + targetHeight / 2;
-            }
-            const avgCenter = sumTargetCenterY / targetsInfo.length;
-            const diff = targetCenterY - avgCenter;
+            if (options.alignment === 'top') {
+              const firstTargetInfo = nodeInfoMap.get(targetsInfo[0].node);
+              const firstTargetHeight = firstTargetInfo?.height || 96;
+              const firstTargetTopY = targetCenterY - firstTargetHeight / 2;
+              const diff = firstTargetTopY - tempSortedY[0];
 
-            for (let idx = 0; idx < tempSortedY.length; idx++) {
-              tempSortedY[idx] += diff;
+              for (let idx = 0; idx < tempSortedY.length; idx++) {
+                tempSortedY[idx] += diff;
+              }
+            } else {
+              let sumTargetCenterY = 0;
+              for (let idx = 0; idx < targetsInfo.length; idx++) {
+                const targetNode = targetsInfo[idx].node;
+                const targetInfo = nodeInfoMap.get(targetNode);
+                const targetHeight = targetInfo?.height || 96;
+                sumTargetCenterY += tempSortedY[idx] + targetHeight / 2;
+              }
+              const avgCenter = sumTargetCenterY / targetsInfo.length;
+              const diff = targetCenterY - avgCenter;
+
+              for (let idx = 0; idx < tempSortedY.length; idx++) {
+                tempSortedY[idx] += diff;
+              }
             }
 
             sortedY = tempSortedY;
@@ -789,6 +805,32 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
       }
     }
 
+    // Build map of incoming nodes for each node in the branch to identify merge points
+    const incomingMap = new Map<string, string[]>();
+    for (const sourceName of branch) {
+      if (childToParent.has(sourceName)) continue;
+      const outputsObj = connections[sourceName];
+      if (outputsObj) {
+        for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+          if (!destGroups) continue;
+          for (const group of destGroups) {
+            if (!group) continue;
+            for (const conn of group) {
+              if (conn && conn.node && branch.includes(conn.node) && !childToParent.has(conn.node)) {
+                if (!incomingMap.has(conn.node)) {
+                  incomingMap.set(conn.node, []);
+                }
+                const list = incomingMap.get(conn.node)!;
+                if (!list.includes(sourceName)) {
+                  list.push(sourceName);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Backward propagation pass: align single-output nodes with their target (excluding bypass side-nodes)
     const sortedNodesReverse = [...branch].sort((a, b) => {
       const posA = branchPositions.get(a) || [0, 0];
@@ -843,7 +885,22 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             }
           }
 
-          if (!isBypassSideNode) {
+          const incoming = incomingMap.get(targetName) || [];
+          const hasMultipleIncoming = incoming.length > 1;
+
+          let isAllowedProp = !hasMultipleIncoming;
+          if (hasMultipleIncoming && options.alignment === 'top') {
+            const sortedIncoming = [...incoming].sort((a, b) => {
+              const posA = branchPositions.get(a) || [0, 0];
+              const posB = branchPositions.get(b) || [0, 0];
+              return posA[1] - posB[1];
+            });
+            if (sortedIncoming[0] === nodeName) {
+              isAllowedProp = true;
+            }
+          }
+
+          if (!isBypassSideNode && isAllowedProp) {
             const targetPos = branchPositions.get(targetName);
             const targetInfo = nodeInfoMap.get(targetName);
             const currentInfo = nodeInfoMap.get(nodeName);
@@ -886,26 +943,46 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         }
 
         if (targets.length > 1) {
-          // Calculate average center Y of targets
-          let sumCenterY = 0;
-          let validTargets = 0;
-          for (const targetName of targets) {
-            const targetPos = branchPositions.get(targetName);
-            const targetInfo = nodeInfoMap.get(targetName);
+          let targetCenterY = 0;
+          let hasValidTarget = false;
+
+          if (options.alignment === 'top') {
+            const sortedTargets = [...targets].sort((a, b) => {
+              const posA = branchPositions.get(a) || [0, 0];
+              const posB = branchPositions.get(b) || [0, 0];
+              return posA[1] - posB[1];
+            });
+            const firstTarget = sortedTargets[0];
+            const targetPos = branchPositions.get(firstTarget);
+            const targetInfo = nodeInfoMap.get(firstTarget);
             if (targetPos && targetInfo) {
-              const targetCenterY = targetPos[1] + targetInfo.height / 2;
-              sumCenterY += targetCenterY;
-              validTargets++;
+              targetCenterY = targetPos[1] + targetInfo.height / 2;
+              hasValidTarget = true;
+            }
+          } else {
+            // Calculate average center Y of targets
+            let sumCenterY = 0;
+            let validTargets = 0;
+            for (const targetName of targets) {
+              const targetPos = branchPositions.get(targetName);
+              const targetInfo = nodeInfoMap.get(targetName);
+              if (targetPos && targetInfo) {
+                sumCenterY += targetPos[1] + targetInfo.height / 2;
+                validTargets++;
+              }
+            }
+            if (validTargets > 0) {
+              targetCenterY = sumCenterY / validTargets;
+              hasValidTarget = true;
             }
           }
 
-          if (validTargets > 0) {
-            const avgCenterY = sumCenterY / validTargets;
+          if (hasValidTarget) {
             const currentInfo = nodeInfoMap.get(nodeName);
             const currentPos = branchPositions.get(nodeName);
             if (currentInfo && currentPos) {
               const currentCenterY = currentPos[1] + currentInfo.height / 2;
-              const diff = avgCenterY - currentCenterY;
+              const diff = targetCenterY - currentCenterY;
               if (diff !== 0) {
                 // Recursively shift this node and its predecessors
                 const shiftNodeAndPredecessors = (currName: string, shiftVal: number, visitedNodes = new Set<string>()) => {
@@ -956,6 +1033,95 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
     }
 
 
+
+    // Centering/Alignment pass for merge nodes (nodes with multiple incoming connections)
+    // Runs upstream-to-downstream (sorted X order) so that predecessors are positioned before the merge node is aligned/centered
+    for (const nodeName of sortedBranchNodes) {
+      if (childToParent.has(nodeName)) continue;
+      const incoming = incomingMap.get(nodeName) || [];
+      if (incoming.length > 1) {
+        let alignPredName = '';
+        if (options.alignment === 'top') {
+          // Sort incoming predecessors by Y coordinate to find the top-most one
+          const sortedIncoming = [...incoming].sort((a, b) => {
+            const posA = branchPositions.get(a) || [0, 0];
+            const posB = branchPositions.get(b) || [0, 0];
+            return posA[1] - posB[1];
+          });
+          alignPredName = sortedIncoming[0];
+        }
+
+        let targetY = 0;
+        let hasValidTarget = false;
+
+        if (options.alignment === 'top') {
+          // Align merge node with top-most predecessor
+          const predPos = branchPositions.get(alignPredName);
+          const predInfo = nodeInfoMap.get(alignPredName);
+          if (predPos && predInfo) {
+            targetY = predPos[1] + predInfo.height / 2;
+            hasValidTarget = true;
+          }
+        } else {
+          // Calculate average center Y of predecessors (default center alignment)
+          let sumCenterY = 0;
+          let validPredecessors = 0;
+          for (const predName of incoming) {
+            const predPos = branchPositions.get(predName);
+            const predInfo = nodeInfoMap.get(predName);
+            if (predPos && predInfo) {
+              const predCenterY = predPos[1] + predInfo.height / 2;
+              sumCenterY += predCenterY;
+              validPredecessors++;
+            }
+          }
+          if (validPredecessors > 0) {
+            targetY = sumCenterY / validPredecessors;
+            hasValidTarget = true;
+          }
+        }
+
+        if (hasValidTarget) {
+          const currentInfo = nodeInfoMap.get(nodeName);
+          const currentPos = branchPositions.get(nodeName);
+          if (currentInfo && currentPos) {
+            const currentCenterY = currentPos[1] + currentInfo.height / 2;
+            const diff = targetY - currentCenterY;
+            if (diff !== 0) {
+              // Shift this node and its downstream successors
+              const shiftNodeAndSuccessors = (currName: string, shiftVal: number, visitedNodes = new Set<string>()) => {
+                if (visitedNodes.has(currName)) return;
+                visitedNodes.add(currName);
+
+                const posVal = branchPositions.get(currName);
+                if (posVal) {
+                  posVal[1] += shiftVal;
+                  branchPositions.set(currName, posVal);
+                }
+
+                // Find successors
+                const outputsObj = connections[currName];
+                if (outputsObj) {
+                  for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+                    if (!destGroups) continue;
+                    for (const group of destGroups) {
+                      if (!group) continue;
+                      for (const conn of group) {
+                        if (conn && conn.node && branch.includes(conn.node) && !childToParent.has(conn.node)) {
+                          shiftNodeAndSuccessors(conn.node, shiftVal, visitedNodes);
+                        }
+                      }
+                    }
+                  }
+                }
+              };
+
+              shiftNodeAndSuccessors(nodeName, diff);
+            }
+          }
+        }
+      }
+    }
 
     // 2. Place subnodes of this branch's nodes
     const queue = branch.filter(name => !childToParent.has(name) && branchPositions.has(name));
@@ -1028,7 +1194,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
       if (y < minY) minY = y;
       if (y + info.height > maxY) maxY = y + info.height;
     }
-
     // Shift to 0,0
     const branchW = maxX - minX;
     const branchH = maxY - minY;
@@ -1258,3 +1423,66 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
     nodes: finalNodes
   };
 }
+
+/**
+ * Automatically runs auto-layout on a workflow if its nodes or connections
+ * have changed relative to the committed HEAD version.
+ */
+export async function autoLayoutIfChanged(
+  fullPath: string,
+  code: string,
+  repoRoot: string,
+  relPath: string,
+  options: LayoutOptions = {}
+): Promise<{ code: string; laidOut: boolean }> {
+  try {
+    let headCode = '';
+    try {
+      headCode = execSync(`git show HEAD:${relPath}`, { cwd: repoRoot, stdio: ['pipe', 'pipe', 'ignore'] }).toString('utf-8');
+    } catch (e) {
+      // File is not tracked or HEAD does not exist (new repository/file)
+      headCode = '';
+    }
+
+    const builder = parseWorkflowCodeToBuilder(code);
+    const workflowJson = builder.toJSON();
+
+    let shouldLayout = false;
+    if (!headCode) {
+      shouldLayout = true;
+    } else {
+      const headBuilder = parseWorkflowCodeToBuilder(headCode);
+      const headJson = headBuilder.toJSON();
+
+      const localNodes = workflowJson.nodes || [];
+      const headNodes = headJson.nodes || [];
+
+      if (localNodes.length !== headNodes.length) {
+        shouldLayout = true;
+      } else {
+        const localNodeKeys = localNodes.map(n => `${n.name}::${n.type}`).sort().join('|');
+        const headNodeKeys = headNodes.map(n => `${n.name}::${n.type}`).sort().join('|');
+        if (localNodeKeys !== headNodeKeys) {
+          shouldLayout = true;
+        } else {
+          const localConnsStr = JSON.stringify(workflowJson.connections || {});
+          const headConnsStr = JSON.stringify(headJson.connections || {});
+          if (localConnsStr !== headConnsStr) {
+            shouldLayout = true;
+          }
+        }
+      }
+    }
+
+    if (shouldLayout) {
+      const updatedJson = await layoutWorkflow(workflowJson, options);
+      const updatedCode = generateWorkflowCode(updatedJson);
+      fs.writeFileSync(fullPath, updatedCode, 'utf-8');
+      return { code: updatedCode, laidOut: true };
+    }
+  } catch (err) {
+    // Fail silently, do not disrupt main flow
+  }
+  return { code, laidOut: false };
+}
+

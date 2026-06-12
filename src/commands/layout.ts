@@ -18,6 +18,7 @@ export function layoutCommand(program: Command) {
     .option('--no-align-terminal-nodes', 'disable vertical alignment of terminal nodes')
     .option('--subnode-sep <px>', 'vertical spacing between parent node and its subnodes')
     .option('--subnode-horizontal-sep <px>', 'horizontal spacing between subnodes')
+    .option('--alignment <mode>', 'branch alignment method (top or center)')
     .option('--dry-run', 'simulate layout without modifying files')
     .action(async (files, options) => {
       try {
@@ -78,6 +79,8 @@ export function layoutCommand(program: Command) {
           ? parseInt(options.subnodeHorizontalSep, 10)
           : (layoutConfig.subnodeHorizontalSep !== undefined ? layoutConfig.subnodeHorizontalSep : undefined);
 
+        const alignment = options.alignment || layoutConfig.alignment || 'center';
+
         for (const file of filesToLayout) {
           const relativePath = path.relative(repoRoot, file).replace(/\\/g, '/');
           
@@ -98,7 +101,8 @@ export function layoutCommand(program: Command) {
               grid,
               alignTerminalNodes,
               subnodeSep,
-              subnodeHorizontalSep
+              subnodeHorizontalSep,
+              alignment
             });
 
             if (options.dryRun) {

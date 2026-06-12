@@ -9,7 +9,7 @@ import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry } from '
 import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
-import { loadNodesDatabase } from '../layout-engine.js';
+import { loadNodesDatabase, autoLayoutIfChanged } from '../layout-engine.js';
 
 function extractIdFromResponse(response: any): string | null {
   if (!response) return null;
@@ -134,9 +134,40 @@ export function pushCommand(program: Command) {
         // Parse and validate local files
         let localValidationFailed = false;
 
+        const layoutConfig = (config as any).layout || {};
+        const grid = layoutConfig.grid !== undefined ? layoutConfig.grid : 20;
+        const nodesep = layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid);
+        const ranksep = layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid);
+        const alignTerminalNodes = layoutConfig.alignTerminalNodes !== undefined ? layoutConfig.alignTerminalNodes : true;
+        const subnodeSep = layoutConfig.subnodeSep;
+        const subnodeHorizontalSep = layoutConfig.subnodeHorizontalSep;
+        const alignment = layoutConfig.alignment;
+
         for (const relPath of localRelativePaths) {
           const fullPath = path.join(localWorkflowsDir, relPath);
-          const code = fs.readFileSync(fullPath, 'utf-8');
+          let code = fs.readFileSync(fullPath, 'utf-8');
+
+          const { code: updatedCode, laidOut } = await autoLayoutIfChanged(
+            fullPath,
+            code,
+            repoRoot,
+            path.join(localDir, 'workflows', relPath).replace(/\\/g, '/'),
+            {
+              nodesep,
+              ranksep,
+              grid,
+              alignTerminalNodes,
+              subnodeSep,
+              subnodeHorizontalSep,
+              alignment
+            }
+          );
+
+          if (laidOut) {
+            output.log(`[LAYOUT] Automatically auto-positioned nodes in: ${relPath}`);
+            code = updatedCode;
+          }
+
           localCodes[relPath] = code;
           localHashes[relPath] = calculateHash(code);
 
