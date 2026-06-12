@@ -1007,11 +1007,16 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
           }
 
           const incoming = incomingMap.get(targetName) || [];
-          const hasMultipleIncoming = incoming.length > 1;
+          const forwardIncoming = incoming.filter(predName => {
+            const posPred = branchPositions.get(predName);
+            const posTarget = branchPositions.get(targetName);
+            return posPred && posTarget && posPred[0] < posTarget[0];
+          });
+          const hasMultipleIncoming = forwardIncoming.length > 1;
 
           let isAllowedProp = !hasMultipleIncoming;
           if (hasMultipleIncoming && options.alignment === 'top') {
-            const sortedIncoming = [...incoming].sort((a, b) => {
+            const sortedIncoming = [...forwardIncoming].sort((a, b) => {
               const posA = branchPositions.get(a) || [0, 0];
               const posB = branchPositions.get(b) || [0, 0];
               return posA[1] - posB[1];
@@ -1160,11 +1165,16 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
     for (const nodeName of sortedBranchNodes) {
       if (childToParent.has(nodeName)) continue;
       const incoming = incomingMap.get(nodeName) || [];
-      if (incoming.length > 1) {
+      const forwardIncoming = incoming.filter(predName => {
+        const posPred = branchPositions.get(predName);
+        const posTarget = branchPositions.get(nodeName);
+        return posPred && posTarget && posPred[0] < posTarget[0];
+      });
+      if (forwardIncoming.length > 1) {
         let alignPredName = '';
         if (options.alignment === 'top') {
           // Sort incoming predecessors by Y coordinate to find the top-most one
-          const sortedIncoming = [...incoming].sort((a, b) => {
+          const sortedIncoming = [...forwardIncoming].sort((a, b) => {
             const posA = branchPositions.get(a) || [0, 0];
             const posB = branchPositions.get(b) || [0, 0];
             return posA[1] - posB[1];
@@ -1187,7 +1197,7 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
           // Calculate average center Y of predecessors (default center alignment)
           let sumCenterY = 0;
           let validPredecessors = 0;
-          for (const predName of incoming) {
+          for (const predName of forwardIncoming) {
             const predPos = branchPositions.get(predName);
             const predInfo = nodeInfoMap.get(predName);
             if (predPos && predInfo) {
@@ -1236,6 +1246,11 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         const curr = q.shift()!;
         const incoming = incomingMap.get(curr) || [];
         for (const pred of incoming) {
+          const posPred = branchPositions.get(pred);
+          const posCurr = branchPositions.get(curr);
+          if (posPred && posCurr && posPred[0] >= posCurr[0]) {
+            continue; // Skip feedback edge in ancestors calculation
+          }
           if (!visited.has(pred) && branch.includes(pred)) {
             visited.add(pred);
             q.push(pred);
