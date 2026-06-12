@@ -186,6 +186,92 @@ export function saveConfig(repoRoot: string, config: N8nCliConfig) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }
 
+export function getLayoutSettingsPath(repoRoot: string): string {
+  const configPath = getConfigPath(repoRoot);
+  const configDir = path.dirname(configPath);
+  return path.join(configDir, 'n8n-layout.json');
+}
+
+export interface LayoutSettings {
+  grid: number;
+  nodesep: number;
+  ranksep: number;
+  alignment: string;
+  alignTerminalNodes: boolean;
+  subnodeSep?: number;
+  subnodeHorizontalSep?: number;
+}
+
+export function loadLayoutSettings(repoRoot: string): LayoutSettings {
+  const layoutPath = getLayoutSettingsPath(repoRoot);
+  let layoutJson: any = {};
+  if (fs.existsSync(layoutPath)) {
+    try {
+      const content = fs.readFileSync(layoutPath, 'utf-8');
+      layoutJson = JSON.parse(content);
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // Load main config for fallback
+  let cliLayoutConfig: any = {};
+  try {
+    const cliConfig = loadConfig(repoRoot);
+    cliLayoutConfig = (cliConfig as any).layout || {};
+  } catch (e) {
+    // ignore
+  }
+
+  // Merge: n8n-layout.json values take precedence over n8n-cli.json layout block
+  const grid = layoutJson.grid !== undefined ? layoutJson.grid : (cliLayoutConfig.grid !== undefined ? cliLayoutConfig.grid : 20);
+  const nodesep = layoutJson.nodesep !== undefined ? layoutJson.nodesep : (cliLayoutConfig.nodesep !== undefined ? cliLayoutConfig.nodesep : (2 * grid));
+  const ranksep = layoutJson.ranksep !== undefined ? layoutJson.ranksep : (cliLayoutConfig.ranksep !== undefined ? cliLayoutConfig.ranksep : (6 * grid));
+  const alignment = layoutJson.alignment !== undefined ? layoutJson.alignment : (cliLayoutConfig.alignment !== undefined ? cliLayoutConfig.alignment : 'center');
+  const alignTerminalNodes = layoutJson.alignTerminalNodes !== undefined ? layoutJson.alignTerminalNodes : (cliLayoutConfig.alignTerminalNodes !== undefined ? cliLayoutConfig.alignTerminalNodes : true);
+  
+  const settings: LayoutSettings = {
+    grid,
+    nodesep,
+    ranksep,
+    alignment,
+    alignTerminalNodes,
+  };
+
+  if (layoutJson.subnodeSep !== undefined) {
+    settings.subnodeSep = layoutJson.subnodeSep;
+  } else if (cliLayoutConfig.subnodeSep !== undefined) {
+    settings.subnodeSep = cliLayoutConfig.subnodeSep;
+  }
+
+  if (layoutJson.subnodeHorizontalSep !== undefined) {
+    settings.subnodeHorizontalSep = layoutJson.subnodeHorizontalSep;
+  } else if (cliLayoutConfig.subnodeHorizontalSep !== undefined) {
+    settings.subnodeHorizontalSep = cliLayoutConfig.subnodeHorizontalSep;
+  }
+
+  return settings;
+}
+
+export function saveDefaultLayoutSettings(repoRoot: string) {
+  const layoutPath = getLayoutSettingsPath(repoRoot);
+  const dir = path.dirname(layoutPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  const defaultLayout = {
+    grid: 20,
+    nodesep: 80,
+    ranksep: 120,
+    alignment: 'center',
+    alignTerminalNodes: true,
+    subnodeSep: 160,
+    subnodeHorizontalSep: 80
+  };
+  fs.writeFileSync(layoutPath, JSON.stringify(defaultLayout, null, 2), 'utf-8');
+}
+
+
 export interface ConnectionInfo {
   mcpCommand: string;
   accessToken: string;

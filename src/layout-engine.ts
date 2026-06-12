@@ -15,6 +15,7 @@ export interface LayoutOptions {
   alignTerminalNodes?: boolean;
   subnodeSep?: number;
   subnodeHorizontalSep?: number;
+  alignment?: string;
 }
 
 export interface NodeMetadata {
@@ -334,6 +335,124 @@ function computeNodeSizes(nodes: any[], connections: any): Map<string, { width: 
 /**
  * Layout the workflow JSON.
  */
+// Helper to recursively shift a node, all its downstream successors, and its single-output predecessors (maintaining branch structure and alignment)
+export function shiftNodeSubtreeAndPredecessors(
+  currName: string,
+  shiftVal: number,
+  positionsMap: Map<string, [number, number]>,
+  childToParentMap: Map<string, string>,
+  connsObj: any,
+  branchNodes: string[],
+  infoMap: Map<string, any>,
+  visitedNodes = new Set<string>()
+) {
+  if (visitedNodes.has(currName)) return;
+  visitedNodes.add(currName);
+
+  const posVal = positionsMap.get(currName);
+  if (posVal) {
+    posVal[1] += shiftVal;
+    positionsMap.set(currName, posVal);
+  }
+
+  // 1. Shift downstream successors (all of them, excluding backwards/feedback edges)
+  const outputsObj = connsObj[currName];
+  if (outputsObj) {
+    for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
+      if (!destGroups) continue;
+      for (const group of destGroups) {
+        if (!group) continue;
+        for (const conn of group) {
+          if (conn && conn.node && branchNodes.includes(conn.node) && !childToParentMap.has(conn.node)) {
+            const posCurr = positionsMap.get(currName);
+            const posDest = positionsMap.get(conn.node);
+            if (posCurr && posDest && posDest[0] <= posCurr[0]) {
+              continue; // Skip feedback edge (upstream target) to prevent cycles
+            }
+            shiftNodeSubtreeAndPredecessors(
+              conn.node,
+              shiftVal,
+              positionsMap,
+              childToParentMap,
+              connsObj,
+              branchNodes,
+              infoMap,
+              visitedNodes
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Shift upstream single-output predecessors (recursively)
+  // Only propagate shifts upstream if the current node has at most 1 incoming connection in the branch.
+  // This prevents merge nodes from shifting unrelated branches upstream.
+  let incomingCount = 0;
+  for (const predName of branchNodes) {
+    if (predName === currName || childToParentMap.has(predName)) continue;
+    const predOutputs = connsObj[predName];
+    if (predOutputs) {
+      let connectsToCurr = false;
+      for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+        if (!dGroups) continue;
+        for (const grp of dGroups) {
+          if (!grp) continue;
+          for (const c of grp) {
+            if (c && c.node === currName) {
+              connectsToCurr = true;
+              break;
+            }
+          }
+          if (connectsToCurr) break;
+        }
+        if (connectsToCurr) break;
+      }
+      if (connectsToCurr) {
+        incomingCount++;
+      }
+    }
+  }
+
+  if (incomingCount <= 1) {
+    for (const predName of branchNodes) {
+      if (predName === currName || childToParentMap.has(predName)) continue;
+      const predOutputs = connsObj[predName];
+      if (predOutputs) {
+        let connectsToCurr = false;
+        let totalOutputs = 0;
+        for (const dGroups of Object.values(predOutputs as Record<string, any[][]>)) {
+          if (!dGroups) continue;
+          for (const grp of dGroups) {
+            if (!grp) continue;
+            for (const c of grp) {
+              if (c && c.node && branchNodes.includes(c.node) && !childToParentMap.has(c.node)) {
+                totalOutputs++;
+                if (c.node === currName) {
+                  connectsToCurr = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (connectsToCurr && totalOutputs === 1) {
+          shiftNodeSubtreeAndPredecessors(
+            predName,
+            shiftVal,
+            positionsMap,
+            childToParentMap,
+            connsObj,
+            branchNodes,
+            infoMap,
+            visitedNodes
+          );
+        }
+      }
+    }
+  }
+}
+
 export async function layoutWorkflow(workflowJson: any, options: LayoutOptions = {}): Promise<any> {
   // Try to load sqlite nodes db
   await loadNodesDatabase();
@@ -1090,40 +1209,253 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             const currentCenterY = currentPos[1] + currentInfo.height / 2;
             const diff = targetY - currentCenterY;
             if (diff !== 0) {
-              // Shift this node and its downstream successors
-              const shiftNodeAndSuccessors = (currName: string, shiftVal: number, visitedNodes = new Set<string>()) => {
-                if (visitedNodes.has(currName)) return;
-                visitedNodes.add(currName);
-
-                const posVal = branchPositions.get(currName);
-                if (posVal) {
-                  posVal[1] += shiftVal;
-                  branchPositions.set(currName, posVal);
-                }
-
-                // Find successors
-                const outputsObj = connections[currName];
-                if (outputsObj) {
-                  for (const destGroups of Object.values(outputsObj as Record<string, any[][]>)) {
-                    if (!destGroups) continue;
-                    for (const group of destGroups) {
-                      if (!group) continue;
-                      for (const conn of group) {
-                        if (conn && conn.node && branch.includes(conn.node) && !childToParent.has(conn.node)) {
-                          shiftNodeAndSuccessors(conn.node, shiftVal, visitedNodes);
-                        }
-                      }
-                    }
-                  }
-                }
-              };
-
-              shiftNodeAndSuccessors(nodeName, diff);
+              shiftNodeSubtreeAndPredecessors(
+                nodeName,
+                diff,
+                branchPositions,
+                childToParent,
+                connections,
+                branch,
+                nodeInfoMap
+              );
             }
           }
         }
       }
     }
+
+
+
+    // Build ancestors map for hierarchical vertical ordering
+    const ancestorsMap = new Map<string, Set<string>>();
+    for (const nodeName of branch) {
+      const visited = new Set<string>();
+      const q = [nodeName];
+      visited.add(nodeName);
+      while (q.length > 0) {
+        const curr = q.shift()!;
+        const incoming = incomingMap.get(curr) || [];
+        for (const pred of incoming) {
+          if (!visited.has(pred) && branch.includes(pred)) {
+            visited.add(pred);
+            q.push(pred);
+          }
+        }
+      }
+      ancestorsMap.set(nodeName, visited);
+    }
+
+    // Collision resolution pass to prevent vertical overlaps in the same/overlapping columns
+    // and to enforce Switch/IF port order constraints
+    const resolvedPositions = new Map<string, [number, number]>(branchPositions);
+
+    const compareNodesHierarchically = (nodeA: string, nodeB: string): number => {
+      if (nodeA === nodeB) return 0;
+
+      const ancestorsA = ancestorsMap.get(nodeA) || new Set<string>();
+      const ancestorsB = ancestorsMap.get(nodeB) || new Set<string>();
+
+      const commonAncestors = [...ancestorsA].filter(n => ancestorsB.has(n));
+      const splitNodes = commonAncestors.filter(n => {
+        const outs = connections[n];
+        if (!outs) return false;
+        let outputCount = 0;
+        for (const destGroups of Object.values(outs as Record<string, any[][]>)) {
+          if (!destGroups) continue;
+          for (const group of destGroups) {
+            if (!group) continue;
+            for (const conn of group) {
+              if (conn && conn.node && branch.includes(conn.node)) {
+                outputCount++;
+              }
+            }
+          }
+        }
+        return outputCount > 1;
+      });
+
+      if (splitNodes.length === 0) return 0;
+
+      splitNodes.sort((a, b) => {
+        const posA = resolvedPositions.get(a) || [0, 0];
+        const posB = resolvedPositions.get(b) || [0, 0];
+        return posA[0] - posB[0]; // ascending X (upstream split node first)
+      });
+
+      for (const splitNode of splitNodes) {
+        const outputsObj = connections[splitNode];
+        if (!outputsObj || !outputsObj.main) continue;
+        const mainOutputs = outputsObj.main as any[][];
+
+        let portA = -1;
+        let portB = -1;
+
+        for (let i = 0; i < mainOutputs.length; i++) {
+          const group = mainOutputs[i];
+          if (group) {
+            for (const conn of group) {
+              if (conn && conn.node && branch.includes(conn.node)) {
+                if (portA === -1 && (conn.node === nodeA || ancestorsMap.get(nodeA)?.has(conn.node))) {
+                  portA = i;
+                }
+                if (portB === -1 && (conn.node === nodeB || ancestorsMap.get(nodeB)?.has(conn.node))) {
+                  portB = i;
+                }
+              }
+            }
+          }
+        }
+
+        if (portA !== -1 && portB !== -1 && portA !== portB) {
+          return portA - portB;
+        }
+      }
+
+      return 0;
+    };
+
+    let collisionDetected = true;
+    let collisionIterations = 0;
+    const maxCollisionIterations = 200;
+
+    const minGap = options.nodesep || 80;
+
+    while (collisionDetected && collisionIterations < maxCollisionIterations) {
+      collisionDetected = false;
+      collisionIterations++;
+      console.log(`[COLLISION] Iteration ${collisionIterations}`);
+
+      const sortedNodes = [...branch]
+        .filter(name => !childToParent.has(name) && resolvedPositions.has(name))
+        .sort((a, b) => {
+          const hierComp = compareNodesHierarchically(a, b);
+          if (hierComp !== 0) return hierComp;
+
+          const posA = resolvedPositions.get(a)!;
+          const posB = resolvedPositions.get(b)!;
+          return posA[1] - posB[1];
+        });
+
+      for (let i = 0; i < sortedNodes.length; i++) {
+        const nodeA = sortedNodes[i];
+        const posA = resolvedPositions.get(nodeA)!;
+        const infoA = nodeInfoMap.get(nodeA)!;
+
+        for (let j = i + 1; j < sortedNodes.length; j++) {
+          const nodeB = sortedNodes[j];
+          const posB = resolvedPositions.get(nodeB)!;
+          const infoB = nodeInfoMap.get(nodeB)!;
+
+          // Check if their X ranges overlap (same/overlapping column)
+          const overlapX = (posA[0] < posB[0] + infoB.width) && (posA[0] + infoA.width > posB[0]);
+          if (overlapX) {
+            // Check if their Y ranges overlap. Node B is below Node A (sorted by Y).
+            const overlapY = posB[1] < posA[1] + infoA.height + minGap;
+            if (overlapY) {
+              const diff = (posA[1] + infoA.height + minGap) - posB[1];
+              if (diff > 0) {
+                console.log(`[COLLISION] OVERLAP: "${nodeA}" (${posA[1]}..${posA[1]+infoA.height}) collides with "${nodeB}" (${posB[1]}..${posB[1]+infoB.height}), shifting "${nodeB}" by ${diff}`);
+                // Shift Node B and all its downstream successors + single-output predecessors
+                shiftNodeSubtreeAndPredecessors(
+                  nodeB,
+                  diff,
+                  resolvedPositions,
+                  childToParent,
+                  connections,
+                  branch,
+                  nodeInfoMap
+                );
+                collisionDetected = true;
+                break; // break inner loop
+              }
+            }
+          }
+        }
+        if (collisionDetected) break; // break outer loop
+      }
+
+      if (collisionDetected) continue;
+
+      // 2. Check port order constraints for split nodes (e.g. Switch/IF branches)
+      for (const splitNode of branch) {
+        if (childToParent.has(splitNode)) continue;
+        const outputsObj = connections[splitNode];
+        if (outputsObj && outputsObj.main) {
+          const mainOutputs = outputsObj.main as any[][];
+          const targetsInfo: Array<{ node: string; index: number }> = [];
+          let targetIdx = 0;
+          for (let i = 0; i < mainOutputs.length; i++) {
+            const group = mainOutputs[i];
+            if (group) {
+              for (const conn of group) {
+                if (conn && conn.node) {
+                  const targetNode = conn.node;
+                  if (branch.includes(targetNode) && !childToParent.has(targetNode) && resolvedPositions.has(targetNode)) {
+                    targetsInfo.push({
+                      node: targetNode,
+                      index: targetIdx++
+                    });
+                  }
+                }
+              }
+            }
+          }
+
+          if (targetsInfo.length > 1) {
+            // Sort targets by index (port order)
+            targetsInfo.sort((a, b) => a.index - b.index);
+
+            // Enforce that target at index i is above target at index j (for i < j)
+            for (let idx = 1; idx < targetsInfo.length; idx++) {
+              const prevTarget = targetsInfo[idx - 1].node;
+              const currTarget = targetsInfo[idx].node;
+
+              // Skip constraint if they are sequentially connected (e.g. in a bypass)
+              const subtreePrev = getDownstreamNodes(prevTarget, branch, splitNode);
+              if (subtreePrev.has(currTarget)) {
+                continue;
+              }
+              const subtreeCurr = getDownstreamNodes(currTarget, branch, splitNode);
+              if (subtreeCurr.has(prevTarget)) {
+                continue;
+              }
+
+              const posPrev = resolvedPositions.get(prevTarget)!;
+              const posCurr = resolvedPositions.get(currTarget)!;
+              const infoPrev = nodeInfoMap.get(prevTarget)!;
+
+              const requiredY = posPrev[1] + infoPrev.height + minGap;
+              if (posCurr[1] < requiredY) {
+                const diff = requiredY - posCurr[1];
+                if (diff > 0) {
+                  console.log(`[COLLISION] PORT ORDER: "${splitNode}": target "${prevTarget}" (index ${idx-1}, Y=${posPrev[1]}) forces target "${currTarget}" (index ${idx}, Y=${posCurr[1]}) below Y=${requiredY}, shifting "${currTarget}" by ${diff}`);
+                  // Shift Node B and all its downstream successors + single-output predecessors
+                  shiftNodeSubtreeAndPredecessors(
+                    currTarget,
+                    diff,
+                    resolvedPositions,
+                    childToParent,
+                    connections,
+                    branch,
+                    nodeInfoMap
+                  );
+                  collisionDetected = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        if (collisionDetected) break;
+      }
+    }
+
+    // Save final resolved positions back to branchPositions
+    for (const [name, pos] of resolvedPositions.entries()) {
+      branchPositions.set(name, pos);
+    }
+
+
 
     // 2. Place subnodes of this branch's nodes
     const queue = branch.filter(name => !childToParent.has(name) && branchPositions.has(name));

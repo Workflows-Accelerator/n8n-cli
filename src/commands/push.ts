@@ -7,7 +7,7 @@ import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCre
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
 import { showConflictDiff } from './diff.js';
-import { parseWorkflowCodeToBuilder, validateWorkflow } from '@n8n/workflow-sdk';
+import { parseWorkflowCodeToBuilder, validateWorkflow, generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
 import { loadNodesDatabase, autoLayoutIfChanged } from '../layout-engine.js';

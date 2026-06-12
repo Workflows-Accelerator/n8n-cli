@@ -173,7 +173,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]\`: Execute workflow.
 - \`n8ncli test <file-or-id> [--pin-data <file>]\`: Test run with mock pin data.
 - \`n8ncli execution <file-or-id> <execution-id> [--include-data]\`: Inspect execution details.
-- \`n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--alignment <mode>] [--dry-run]\`: Auto-position nodes in n8n workflows using Dagre.
+- \`n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]\`: Auto-position nodes in n8n workflows using Dagre (resolving parameters from command line, n8n-layout.json, and n8n-cli.json).
 
 
 ### Publishing & Nodes

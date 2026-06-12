@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { findRepoRoot, loadConfig, convertLocalJsonWorkflows } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, loadLayoutSettings } from '../config.js';
 import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
 import { layoutWorkflow } from '../layout-engine.js';
 import * as output from '../output.js';
@@ -62,24 +62,28 @@ export function layoutCommand(program: Command) {
           return;
         }
 
-        const layoutConfig = (config as any).layout || {};
-        const grid = options.grid !== undefined ? parseInt(options.grid, 10) : (layoutConfig.grid !== undefined ? layoutConfig.grid : 20);
-        const nodesep = options.nodesep !== undefined ? parseInt(options.nodesep, 10) : (layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid));
-        const ranksep = options.ranksep !== undefined ? parseInt(options.ranksep, 10) : (layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid));
+        const defaults = loadLayoutSettings(repoRoot);
+        const grid = options.grid !== undefined ? parseInt(options.grid, 10) : defaults.grid;
+        const nodesep = options.nodesep !== undefined
+          ? parseInt(options.nodesep, 10)
+          : (options.grid !== undefined && defaults.nodesep === 2 * defaults.grid ? (2 * grid) : defaults.nodesep);
+        const ranksep = options.ranksep !== undefined
+          ? parseInt(options.ranksep, 10)
+          : (options.grid !== undefined && defaults.ranksep === 6 * defaults.grid ? (6 * grid) : defaults.ranksep);
 
         const alignTerminalNodes = options.alignTerminalNodes !== undefined
           ? options.alignTerminalNodes
-          : (layoutConfig.alignTerminalNodes !== undefined ? layoutConfig.alignTerminalNodes : true);
+          : defaults.alignTerminalNodes;
 
         const subnodeSep = options.subnodeSep !== undefined
           ? parseInt(options.subnodeSep, 10)
-          : (layoutConfig.subnodeSep !== undefined ? layoutConfig.subnodeSep : undefined);
+          : defaults.subnodeSep;
 
         const subnodeHorizontalSep = options.subnodeHorizontalSep !== undefined
           ? parseInt(options.subnodeHorizontalSep, 10)
-          : (layoutConfig.subnodeHorizontalSep !== undefined ? layoutConfig.subnodeHorizontalSep : undefined);
+          : defaults.subnodeHorizontalSep;
 
-        const alignment = options.alignment || layoutConfig.alignment || 'center';
+        const alignment = options.alignment || defaults.alignment;
 
         for (const file of filesToLayout) {
           const relativePath = path.relative(repoRoot, file).replace(/\\/g, '/');

@@ -387,14 +387,12 @@ async function pullRemoteN8nReference(
   };
 
   if (!isIndependentRefEnv) {
-    // Same environment: reuse active mcp
-    // Temporarily enable MCP if it is a different project
-    const isSameProject = refProjId === config.projectId;
+    const needsMcpEnabling = (refProjId !== config.projectId) || (refFolderId !== config.folderId);
     let refMcpCache: Record<string, boolean> = {};
     let refFolderPaths: Record<string, string> = {};
 
     try {
-      if (!isSameProject) {
+      if (needsMcpEnabling) {
         try {
           const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId: refProjId });
           const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
@@ -407,7 +405,7 @@ async function pullRemoteN8nReference(
       const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
       await doPull(mcp, instanceUrl, apiKey, dbUrl, folderCache);
     } finally {
-      if (!isSameProject) {
+      if (needsMcpEnabling) {
         output.log(`Restoring MCP access settings for reference project '${source.projectName || refProjId}'...`);
         try {
           const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';

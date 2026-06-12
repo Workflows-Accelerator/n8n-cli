@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import { execSync } from 'child_process';
-import { findRepoRoot, loadConfig, convertLocalJsonWorkflows } from '../config.js';
+import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, loadLayoutSettings } from '../config.js';
 import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
 import { loadStandards, validateWorkflowAgainstStandards, fixWorkflowAgainstStandards, toSmartTitleCase } from '../lint-engine.js';
 import { loadSyncState, saveSyncState, calculateHash } from '../sync-state.js';
@@ -157,23 +157,15 @@ export function lintCommand(program: Command) {
                 }
 
                 if (shouldLayout) {
-                  const layoutConfig = (config as any).layout || {};
-                  const grid = layoutConfig.grid !== undefined ? layoutConfig.grid : 20;
-                  const nodesep = layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid);
-                  const ranksep = layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid);
-                  const alignTerminalNodes = layoutConfig.alignTerminalNodes !== undefined ? layoutConfig.alignTerminalNodes : true;
-                  const subnodeSep = layoutConfig.subnodeSep;
-                  const subnodeHorizontalSep = layoutConfig.subnodeHorizontalSep;
-                  const alignment = layoutConfig.alignment;
-
+                  const defaults = loadLayoutSettings(repoRoot);
                   const laidOutJson = await layoutWorkflow(modifiedJson, {
-                    nodesep,
-                    ranksep,
-                    grid,
-                    alignTerminalNodes,
-                    subnodeSep,
-                    subnodeHorizontalSep,
-                    alignment
+                    nodesep: defaults.nodesep,
+                    ranksep: defaults.ranksep,
+                    grid: defaults.grid,
+                    alignTerminalNodes: defaults.alignTerminalNodes,
+                    subnodeSep: defaults.subnodeSep,
+                    subnodeHorizontalSep: defaults.subnodeHorizontalSep,
+                    alignment: defaults.alignment
                   });
                   Object.assign(modifiedJson, laidOutJson);
                   laidOut = true;

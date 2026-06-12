@@ -252,28 +252,30 @@ n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-a
 ```
 - Auto-positions nodes in local `.workflow.ts` files using the Dagre layout engine.
 - Automatically resolves sizes for standard nodes, triggers, sticky notes, flex nodes, and AI clusters or sub-clusters based on their port signatures.
-- Resolves parameters from command-line options, then local `n8n-cli.json` configuration (`layout` object), and falls back to dynamic defaults based on the grid step.
-- **`--nodesep <px>`**: Specifies node separation distance in pixels (defaults to `layout.nodesep` in `n8n-cli.json` or dynamically computed as `6 * grid`).
-- **`--ranksep <px>`**: Specifies rank (column) separation distance in pixels (defaults to `layout.ranksep` in `n8n-cli.json` or dynamically computed as `6 * grid`).
-- **`--grid <px>`**: Snapping grid size in pixels (defaults to `layout.grid` in `n8n-cli.json` or `20`).
+- Resolves parameters from:
+  1. Command-line options
+  2. A dedicated `n8n-layout.json` configuration file in the config folder (e.g. `n8n/config/n8n-layout.json`)
+  3. Local `n8n-cli.json` configuration (`layout` object)
+  4. Fallback defaults (e.g., `nodesep = 80`, `ranksep = 120`, `grid = 20`, `alignment = center`).
+- **`--nodesep <px>`**: Specifies node separation distance in pixels (defaults to `80`, or configured in `n8n-layout.json` / `n8n-cli.json`).
+- **`--ranksep <px>`**: Specifies rank (column) separation distance in pixels (defaults to `120`, or configured in `n8n-layout.json` / `n8n-cli.json`).
+- **`--grid <px>`**: Snapping grid size in pixels (defaults to `20`, or configured in `n8n-layout.json` / `n8n-cli.json`).
 - **`--no-align-terminal-nodes`**: Disables the vertical alignment of terminal nodes with their closest predecessors.
-- **`--subnode-sep <px>`**: Specifies vertical spacing between a parent node and its subnodes (defaults to `layout.subnodeSep` or dynamically computed as `ranksep + 2 * grid`).
-- **`--subnode-horizontal-sep <px>`**: Specifies horizontal spacing between subnodes (defaults to `layout.subnodeHorizontalSep` or dynamically computed as `4 * grid`).
-- **`--alignment <mode>`**: Specifies branch alignment method (`center` or `top`, defaults to `layout.alignment` in `n8n-cli.json` or `center`). `top` alignment aligns the first branch of a split node to the vertical level of the split node and cascades subsequent branches downwards.
+- **`--subnode-sep <px>`**: Specifies vertical spacing between a parent node and its subnodes (defaults to `160`, or configured in `n8n-layout.json` / `n8n-cli.json`).
+- **`--subnode-horizontal-sep <px>`**: Specifies horizontal spacing between subnodes (defaults to `80`, or configured in `n8n-layout.json` / `n8n-cli.json`).
+- **`--alignment <mode>`**: Specifies branch alignment method (`center` or `top`, defaults to `center` or configured in `n8n-layout.json` / `n8n-cli.json`). `top` alignment aligns the first branch of a split node to the vertical level of the split node and cascades subsequent branches downwards.
 - **`--dry-run`**: Simulates the auto-positioning without modifying the file.
 
-### Local Layout Config Example (`n8n-cli.json`):
+### Local Layout Config Example (`n8n-layout.json`):
 ```json
 {
-  "layout": {
-    "grid": 20,
-    "nodesep": 120,
-    "ranksep": 120,
-    "alignTerminalNodes": true,
-    "subnodeSep": 160,
-    "subnodeHorizontalSep": 80,
-    "alignment": "top"
-  }
+  "grid": 20,
+  "nodesep": 80,
+  "ranksep": 120,
+  "alignment": "center",
+  "alignTerminalNodes": true,
+  "subnodeSep": 160,
+  "subnodeHorizontalSep": 80
 }
 ```
 

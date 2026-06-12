@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig } from '../config.js';
+import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig, saveDefaultLayoutSettings } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 import { writeSkillFile } from './import-skill.js';
@@ -403,9 +403,18 @@ export function initCommand(program: Command) {
         output.warn(`Could not initialize n8n-standards.json: ${err instanceof Error ? err.message : String(err)}`);
       }
 
+      // Automatically generate n8n-layout.json if not present
+      try {
+        saveDefaultLayoutSettings(repoRoot);
+        output.log(`Initialized default layout settings in ${localDir}/config/n8n-layout.json`);
+      } catch (err) {
+        output.warn(`Could not initialize n8n-layout.json: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       output.log('\nGenerated config files:');
       output.log(`  - ${localDir}/config/n8n-cli.json (Repository config, can be committed)`);
       output.log(`  - ${localDir}/config/n8n-standards.json (Standards & style configuration, should be committed)`);
+      output.log(`  - ${localDir}/config/n8n-layout.json (Layout engine configurations, should be committed)`);
       output.log(`  - ${localDir}/config/sync-state.json (Local environment sync-state, IGNORED)`);
       output.log(`  - ${localDir}/config/workflow-folders.json (Local folder cache, IGNORED)`);
       output.log(`  - ${localDir}/config/unconfigured-credentials.json (Unconfigured credentials tracking, IGNORED)`);
