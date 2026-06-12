@@ -614,7 +614,7 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             const sideInfo = nodeInfoMap.get(targetsInfo[bypassSourceIdx].node);
             const sideHeight = sideInfo?.height || 96;
             const grid = options.grid || 20;
-            const offset = Math.round((sideHeight * 0.8 + nodesep * 0.5) / grid) * grid;
+            const offset = Math.round((sideHeight + 4) / grid) * grid;
             
             const newY_merge = splitY;
             const newY_side = bypassSourceIdx < bypassTargetIdx ? splitY - offset : splitY + offset;
