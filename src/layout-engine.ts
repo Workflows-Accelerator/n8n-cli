@@ -34,6 +34,57 @@ let dbLoaded = false;
  */
 function findNodesDb(): { dbPath: string; sqljsPath: string } | null {
   try {
+    // 1. Check environment variable first
+    if (process.env.N8N_MCP_DB_PATH) {
+      const dbPath = path.resolve(process.env.N8N_MCP_DB_PATH);
+      let sqljsPath = '';
+      try {
+        sqljsPath = require.resolve('sql.js');
+      } catch (e) {
+        const pathsToTry = [
+          path.join(path.dirname(dbPath), '..', 'node_modules', 'sql.js'),
+          path.join(process.cwd(), 'node_modules', 'sql.js'),
+        ];
+        for (const p of pathsToTry) {
+          if (fs.existsSync(p)) {
+            sqljsPath = p;
+            break;
+          }
+        }
+      }
+      if (fs.existsSync(dbPath) && sqljsPath) {
+        return { dbPath, sqljsPath };
+      }
+    }
+
+    // 2. Try Node module resolution
+    try {
+      const dbPath = require.resolve('n8n-mcp/data/nodes.db');
+      const sqljsPath = require.resolve('sql.js');
+      if (fs.existsSync(dbPath) && fs.existsSync(sqljsPath)) {
+        return { dbPath, sqljsPath };
+      }
+    } catch (e) {
+      // ignore and try other methods
+    }
+
+    // 3. Search up from process.cwd() and __dirname for node_modules/n8n-mcp/data/nodes.db
+    const startDirs = [process.cwd(), path.dirname(new URL(import.meta.url).pathname)];
+    for (const startDir of startDirs) {
+      let currentDir = startDir;
+      while (currentDir) {
+        const dbPath = path.join(currentDir, 'node_modules', 'n8n-mcp', 'data', 'nodes.db');
+        const sqljsPath = path.join(currentDir, 'node_modules', 'sql.js');
+        if (fs.existsSync(dbPath) && fs.existsSync(sqljsPath)) {
+          return { dbPath, sqljsPath };
+        }
+        const parent = path.dirname(currentDir);
+        if (parent === currentDir) break;
+        currentDir = parent;
+      }
+    }
+
+    // 4. Fall back to NPX cache directory (original logic)
     const isWindows = os.platform() === 'win32';
     let npmCacheDir = '';
     if (isWindows) {
@@ -43,16 +94,16 @@ function findNodesDb(): { dbPath: string; sqljsPath: string } | null {
       npmCacheDir = path.join(os.homedir(), '.npm', '_npx');
     }
 
-    if (!fs.existsSync(npmCacheDir)) return null;
-
-    const subdirs = fs.readdirSync(npmCacheDir);
-    for (const subdir of subdirs) {
-      const fullSubdir = path.join(npmCacheDir, subdir);
-      if (fs.statSync(fullSubdir).isDirectory()) {
-        const dbPath = path.join(fullSubdir, 'node_modules', 'n8n-mcp', 'data', 'nodes.db');
-        const sqljsPath = path.join(fullSubdir, 'node_modules', 'sql.js');
-        if (fs.existsSync(dbPath) && fs.existsSync(sqljsPath)) {
-          return { dbPath, sqljsPath };
+    if (fs.existsSync(npmCacheDir)) {
+      const subdirs = fs.readdirSync(npmCacheDir);
+      for (const subdir of subdirs) {
+        const fullSubdir = path.join(npmCacheDir, subdir);
+        if (fs.statSync(fullSubdir).isDirectory()) {
+          const dbPath = path.join(fullSubdir, 'node_modules', 'n8n-mcp', 'data', 'nodes.db');
+          const sqljsPath = path.join(fullSubdir, 'node_modules', 'sql.js');
+          if (fs.existsSync(dbPath) && fs.existsSync(sqljsPath)) {
+            return { dbPath, sqljsPath };
+          }
         }
       }
     }

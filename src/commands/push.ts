@@ -3,10 +3,10 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import pg from 'pg';
-import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials, loadLayoutSettings } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
-import { showConflictDiff } from './diff.js';
+import { showConflictDiff, stripPositions } from './diff.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow, generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
@@ -135,14 +135,14 @@ export function pushCommand(program: Command) {
         // Parse and validate local files
         let localValidationFailed = false;
 
-        const layoutConfig = (config as any).layout || {};
-        const grid = layoutConfig.grid !== undefined ? layoutConfig.grid : 20;
-        const nodesep = layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid);
-        const ranksep = layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid);
-        const alignTerminalNodes = layoutConfig.alignTerminalNodes !== undefined ? layoutConfig.alignTerminalNodes : true;
-        const subnodeSep = layoutConfig.subnodeSep;
-        const subnodeHorizontalSep = layoutConfig.subnodeHorizontalSep;
-        const alignment = layoutConfig.alignment;
+        const layoutSettings = loadLayoutSettings(repoRoot);
+        const grid = layoutSettings.grid;
+        const nodesep = layoutSettings.nodesep;
+        const ranksep = layoutSettings.ranksep;
+        const alignTerminalNodes = layoutSettings.alignTerminalNodes;
+        const subnodeSep = layoutSettings.subnodeSep;
+        const subnodeHorizontalSep = layoutSettings.subnodeHorizontalSep;
+        const alignment = layoutSettings.alignment;
 
         for (const relPath of localRelativePaths) {
           const fullPath = path.join(localWorkflowsDir, relPath);
@@ -761,7 +761,22 @@ export function pushCommand(program: Command) {
                   remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
                   
                   if (remoteDetails.updatedAt && entry.remoteUpdatedAt !== remoteDetails.updatedAt) {
-                    conflict = true;
+                    const baseCode = loadWorkflowCache(repoRoot, entry.id, localDir);
+                    const localCode = localCodes[relPath];
+                    const remoteCode = remoteDetails ? generateWorkflowCode(remoteDetails) : '';
+
+                    const localSemanticChange = baseCode ? stripPositions(localCode) !== stripPositions(baseCode) : true;
+                    const remoteSemanticChange = baseCode ? stripPositions(remoteCode) !== stripPositions(baseCode) : true;
+
+                    if (localSemanticChange && remoteSemanticChange) {
+                      if (stripPositions(localCode) !== stripPositions(remoteCode)) {
+                        conflict = true;
+                      }
+                    } else if (remoteSemanticChange) {
+                      conflict = true;
+                    } else {
+                      conflict = false;
+                    }
                   }
                 } catch (e) {
                   // ignore

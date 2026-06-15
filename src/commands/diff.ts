@@ -54,10 +54,15 @@ export function printDiff(orig: string[], mod: string[]) {
 }
 
 export function stripPositions(content: string): string {
-  // Replace ", position: [x, y]"
-  let cleaned = content.replace(/,\s*position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]/g, '');
+  // Replace ", position: [x, y]" (including scientific notation like 2e-14)
+  let cleaned = content.replace(/,\s*position:\s*\[\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*,\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*\]/g, '');
   // Also replace "position: [x, y],"
-  cleaned = cleaned.replace(/position:\s*\[\s*-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?\s*\]\s*,?/g, '');
+  cleaned = cleaned.replace(/position:\s*\[\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*,\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*\]\s*,?/g, '');
+  // Replace sticky note width and height
+  cleaned = cleaned.replace(/,\s*width:\s*\d+/g, '');
+  cleaned = cleaned.replace(/width:\s*\d+\s*,?/g, '');
+  cleaned = cleaned.replace(/,\s*height:\s*\d+/g, '');
+  cleaned = cleaned.replace(/height:\s*\d+\s*,?/g, '');
   return cleaned;
 }
 

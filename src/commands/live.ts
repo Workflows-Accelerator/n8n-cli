@@ -9,7 +9,8 @@ import {
   buildFolderPaths,
   convertLocalJsonWorkflows,
   syncCredentials,
-  fetchWorkflowsPaginated
+  fetchWorkflowsPaginated,
+  loadLayoutSettings
 } from '../config.js';
 import { McpClient } from '../mcp-client.js';
 import {
@@ -22,7 +23,7 @@ import {
   SyncState,
   SyncWorkflowEntry
 } from '../sync-state.js';
-import { showConflictDiff } from './diff.js';
+import { showConflictDiff, stripPositions } from './diff.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
 import { autoLayoutIfChanged } from '../layout-engine.js';
@@ -376,14 +377,14 @@ export function liveCommand(program: Command) {
         await mcp.connect(mcpCommand, accessToken, instanceUrl);
 
         // Layout parameters
-        const layoutConfig = (config as any).layout || {};
-        const grid = layoutConfig.grid !== undefined ? layoutConfig.grid : 20;
-        const nodesep = layoutConfig.nodesep !== undefined ? layoutConfig.nodesep : (2 * grid);
-        const ranksep = layoutConfig.ranksep !== undefined ? layoutConfig.ranksep : (6 * grid);
-        const alignTerminalNodes = layoutConfig.alignTerminalNodes !== undefined ? layoutConfig.alignTerminalNodes : true;
-        const subnodeSep = layoutConfig.subnodeSep;
-        const subnodeHorizontalSep = layoutConfig.subnodeHorizontalSep;
-        const alignment = layoutConfig.alignment;
+        const layoutSettings = loadLayoutSettings(repoRoot);
+        const grid = layoutSettings.grid;
+        const nodesep = layoutSettings.nodesep;
+        const ranksep = layoutSettings.ranksep;
+        const alignTerminalNodes = layoutSettings.alignTerminalNodes;
+        const subnodeSep = layoutSettings.subnodeSep;
+        const subnodeHorizontalSep = layoutSettings.subnodeHorizontalSep;
+        const alignment = layoutSettings.alignment;
 
         // Clean shutdown handler
         const shutdown = async () => {
@@ -640,10 +641,6 @@ export function liveCommand(program: Command) {
                   }
 
                   if (localChanged && remoteChanged) {
-                    // CONFLICT DETECTED
-                    output.error(`[LIVE CONFLICT] Workflow '${rw.name}' modified both locally and remotely! Sync paused.`);
-                    syncState.workflows[stateEntry.localPath].conflict = true;
-
                     const baseCode = loadWorkflowCache(repoRoot, rw.id, localDir);
                     const localCode = lw.code;
                     let remoteCode = '';
@@ -652,17 +649,106 @@ export function liveCommand(program: Command) {
                       remoteCode = generateWorkflowCode(details.workflow || details);
                     } catch (e) {}
 
-                    if (baseCode && remoteCode) {
-                      showConflictDiff(stateEntry.localPath, baseCode, localCode, remoteCode);
+                    const localSemanticChange = baseCode ? stripPositions(localCode) !== stripPositions(baseCode) : true;
+                    const remoteSemanticChange = baseCode ? stripPositions(remoteCode) !== stripPositions(baseCode) : true;
+
+                    let liveConflict = false;
+                    if (localSemanticChange && remoteSemanticChange) {
+                      if (stripPositions(localCode) !== stripPositions(remoteCode)) {
+                        liveConflict = true;
+                      }
+                    } else if (remoteSemanticChange) {
+                      liveConflict = false;
+                    } else if (localSemanticChange) {
+                      liveConflict = false;
+                    } else {
+                      liveConflict = false;
                     }
 
-                    currentConflictsMap.set(rw.id, {
-                      id: rw.id,
-                      name: rw.name,
-                      localPath: stateEntry.localPath,
-                      detectedAt: new Date().toISOString(),
-                      reason: 'Modified both locally and remotely.'
-                    });
+                    if (liveConflict) {
+                      // CONFLICT DETECTED
+                      output.error(`[LIVE CONFLICT] Workflow '${rw.name}' modified both locally and remotely! Sync paused.`);
+                      syncState.workflows[stateEntry.localPath].conflict = true;
+
+                      if (baseCode && remoteCode) {
+                        showConflictDiff(stateEntry.localPath, baseCode, localCode, remoteCode);
+                      }
+
+                      currentConflictsMap.set(rw.id, {
+                        id: rw.id,
+                        name: rw.name,
+                        localPath: stateEntry.localPath,
+                        detectedAt: new Date().toISOString(),
+                        reason: 'Modified both locally and remotely.'
+                      });
+                    } else {
+                      // Resolve conflict automatically!
+                      if (localSemanticChange) {
+                        output.log(`[LIVE] Auto-pushing semantic changes for: ${stateEntry.localPath}`);
+                        try {
+                          const builder = parseWorkflowCodeToBuilder(lw.code);
+                          const workflowJson = builder.toJSON();
+
+                          const allowedKeys = ['name', 'nodes', 'connections', 'settings', 'staticData', 'meta', 'pinData'];
+                          const sanitizedWf: Record<string, any> = {};
+                          for (const key of allowedKeys) {
+                            if (workflowJson[key] !== undefined) {
+                              sanitizedWf[key] = workflowJson[key];
+                            }
+                          }
+                          if (sanitizedWf.settings) {
+                            sanitizedWf.settings = { ...sanitizedWf.settings };
+                            delete sanitizedWf.settings.availableInMCP;
+                            delete sanitizedWf.settings.binaryMode;
+                            delete sanitizedWf.settings.description;
+                          }
+
+                          const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+                          const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${rw.id}`, {
+                            method: 'PUT',
+                            headers: {
+                              'X-N8N-API-KEY': apiKey,
+                              'Content-Type': 'application/json',
+                            },
+                            body: JSON.stringify(sanitizedWf),
+                          });
+
+                          if (res.ok) {
+                            const details = await mcp!.callToolAndGetJson('get_workflow_details', { workflowId: rw.id, id: rw.id });
+                            const updatedWf = details.workflow || details;
+
+                            syncState.workflows[stateEntry.localPath] = {
+                              ...stateEntry,
+                              name: lw.name,
+                              contentHash: localHash,
+                              remoteUpdatedAt: updatedWf.updatedAt || new Date().toISOString(),
+                            };
+                            saveWorkflowCache(repoRoot, rw.id, lw.code, localDir);
+                            pushedCount++;
+                          }
+                        } catch (err) {
+                          output.error(`[LIVE] Failed to auto-push workflow ${rw.name}: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                      } else {
+                        output.log(`[LIVE] Auto-pulling changes for: ${rw.name}`);
+                        if (remoteCode) {
+                          try {
+                            const fullPath = path.join(localWorkflowsDir, stateEntry.localPath);
+                            fs.writeFileSync(fullPath, remoteCode, 'utf-8');
+                            saveWorkflowCache(repoRoot, rw.id, remoteCode, localDir);
+
+                            syncState.workflows[stateEntry.localPath] = {
+                              ...stateEntry,
+                              contentHash: calculateHash(remoteCode),
+                              remoteUpdatedAt: rw.updatedAt,
+                            };
+                            pulledCount++;
+                          } catch (err) {
+                            output.error(`[LIVE] Failed to auto-pull workflow ${rw.name}: ${err instanceof Error ? err.message : String(err)}`);
+                          }
+                        }
+                      }
+                    }
                   } else if (localChanged) {
                     // Only Local Changed -> Push
                     output.log(`[LIVE] Pushing local changes: ${stateEntry.localPath} (${rw.id})`);

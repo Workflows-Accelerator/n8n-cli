@@ -7,6 +7,7 @@ import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
+import { stripPositions } from './diff.js';
 import * as output from '../output.js';
 
 
@@ -536,8 +537,10 @@ export function pullCommand(program: Command) {
                 } else {
                   // Scenario C: Hashes differ -> check if local was modified
                   const isLocalModified = stateEntry && stateEntry.contentHash !== localHash;
+                  const baseCode = stateEntry ? loadWorkflowCache(repoRoot!, details.id, localDir) : null;
+                  const localSemanticChange = baseCode ? stripPositions(localContent) !== stripPositions(baseCode) : true;
 
-                  if (isLocalModified && !options.force) {
+                  if (isLocalModified && localSemanticChange && !options.force) {
                     output.warn(`  [CONFLICT] '${relativePath}' has local modifications. Skipping. Use --force to overwrite.`);
                     skippedCount++;
                     hasConflicts = true;
