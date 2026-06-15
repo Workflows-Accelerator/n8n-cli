@@ -120,12 +120,13 @@ All commands support global options: `--verbose` for detailed stderr logging, `-
 
 ### `n8ncli init`
 ```bash
-n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>] [--db-url <url>]
+n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>] [--db-url <url>] [--reset]
 ```
 - Sets up folders under `n8n/`.
 - Populates/appends `.env` and `.gitignore`.
 - Establishes `n8n/config/n8n-cli.json`.
 - Saves configurations globally to `~/.n8ncli-global.json` under the specified `--env` namespace.
+- **`--reset`**: Resets the default config files (`n8n-standards.json` and `n8n-layout.json`) to defaults and removes transient local cache files (`sync-state.json`, `workflow-folders.json`, and `unconfigured-credentials.json`). By default, without `--reset`, existing configuration files and custom rules are preserved.
 
 ### `n8ncli projects`
 ```bash

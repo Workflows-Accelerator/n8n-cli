@@ -143,7 +143,8 @@ export const DEFAULT_STANDARDS: StandardsConfig = {
       'PDF', 'SMS', 'API', 'Gemini', 'Supabase', 'Twilio', 'Gotenberg', 'n8n', 'JSON', 'URL',
       'HTTP', 'HTTPS', 'REST', 'SQL', 'DB', 'OAuth', 'Webhook', 'CRM', 'AI', 'LLM', 'Slack',
       'Discord', 'Telegram', 'WhatsApp', 'Google', 'GitHub', 'Stripe', 'PayPal', 'HubSpot',
-      'Notion', 'Airtable', 'Asana', 'Jira', 'Trello', 'SendGrid', 'Mailgun'
+      'Notion', 'Airtable', 'Asana', 'Jira', 'Trello', 'SendGrid', 'Mailgun',
+      'sub-clusters', 'sub-cluster', 'human-in-the-loop'
     ],
     _comment_allowedWords: 'Add custom words here that are specific to your workflows to prevent spelling warnings.',
     errorMessage: 'Text, names, and variables must be written in English.'
@@ -153,7 +154,36 @@ export const DEFAULT_STANDARDS: StandardsConfig = {
     folders: [],
     nodes: [],
     variables: [],
-    words: []
+    words: [
+      'sub-workflows',
+      'itemId',
+      'sub-workflow',
+      'defineBelow',
+      'executeOnce',
+      'high-value',
+      'Category-based',
+      'low-value',
+      'Re-converges',
+      'Metadata',
+      'high-level',
+      'metadata',
+      'responseId',
+      'embeddings',
+      'pgvector',
+      'PostgreSQL',
+      'retrieval-augmented',
+      'LLM',
+      'SaaS',
+      'backend',
+      'LangChain'
+    ]
+  },
+  ignoreRules: {
+    nodes: {
+      namingRegex: [
+        'n8n-nodes-base.webhook'
+      ]
+    }
   }
 };
 

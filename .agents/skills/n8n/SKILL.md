@@ -1,6 +1,6 @@
 ---
 name: n8ncli
-version: 1.2.23
+version: 1.2.24
 description: |
   Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
   Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
@@ -36,7 +36,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
   - `n8ncli env test [name]`: Test REST API, MCP, and PostgreSQL DB connections.
   - `n8ncli env edit <name>`: Configure environment details interactively or via flags.
   - `n8ncli env delete <name>`: Delete an environment configuration.
-- `n8ncli init`: Initialize workspace config (creates `n8n/config/n8n-cli.json`).
+- `n8ncli init [--reset]`: Initialize workspace config. Use `--reset` to reset standards and layout configurations and delete local caches.
 - `n8ncli projects`: List accessible projects.
 - `n8ncli folders`: List folders under the project.
 - `n8ncli lint [--fix] [--only-modified]`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files).

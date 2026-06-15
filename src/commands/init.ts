@@ -39,6 +39,7 @@ export function initCommand(program: Command) {
     .option('--mcp-command <cmd>', 'MCP server start command')
     .option('--dir <path>', 'local directory for n8n files (defaults to n8n)', 'n8n')
     .option('--interactive', 'run interactive configuration wizard', false)
+    .option('--reset', 'reset the default config files (standards & layout) and delete local caches', false)
     .action(async (options) => {
       const repoRoot = process.cwd();
 
@@ -362,14 +363,22 @@ export function initCommand(program: Command) {
         }
       }
 
-      // 5. Write config file
+      // 5. Read existing config to merge unless --reset is set
+      const cliConfigPath = path.join(repoRoot, localDir, 'config', 'n8n-cli.json');
+      let existingConfig: N8nCliConfig | null = null;
+      if (fs.existsSync(cliConfigPath) && !options.reset) {
+        try {
+          existingConfig = JSON.parse(fs.readFileSync(cliConfigPath, 'utf-8'));
+        } catch (e) {}
+      }
+
       const config: N8nCliConfig = {
         env: envName,
         localDir: localDir,
-        projectId: projectId || 'personal',
-        projectName,
-        folderId,
-        folderName,
+        projectId: projectId || (existingConfig ? existingConfig.projectId : 'personal'),
+        projectName: projectName !== 'Personal' ? projectName : (existingConfig ? existingConfig.projectName : projectName),
+        folderId: folderId || (existingConfig ? existingConfig.folderId : undefined),
+        folderName: folderName || (existingConfig ? existingConfig.folderName : undefined),
       };
 
       if (refProjectId) {
@@ -382,10 +391,29 @@ export function initCommand(program: Command) {
         if (refEnv) {
           config.references.env = refEnv;
         }
+      } else if (existingConfig && existingConfig.references) {
+        config.references = existingConfig.references;
       }
 
       saveConfig(repoRoot, config);
       output.log(`Configuration saved to: ${localDir}/config/n8n-cli.json`);
+
+      // Deleting local caches if --reset is set
+      if (options.reset) {
+        const filesToClean = [
+          path.join(repoRoot, localDir, 'config', 'sync-state.json'),
+          path.join(repoRoot, localDir, 'config', 'workflow-folders.json'),
+          path.join(repoRoot, localDir, 'config', 'unconfigured-credentials.json')
+        ];
+        for (const file of filesToClean) {
+          if (fs.existsSync(file)) {
+            try {
+              fs.unlinkSync(file);
+              output.log(`Removed local cache/state file: ${path.relative(repoRoot, file)}`);
+            } catch (e) {}
+          }
+        }
+      }
 
       // Automatically write the agent skill to .agents/skills/n8n/SKILL.md
       try {
@@ -395,20 +423,30 @@ export function initCommand(program: Command) {
         output.warn(`Could not automatically create agent skill: ${err instanceof Error ? err.message : String(err)}`);
       }
 
-      // Automatically generate n8n-standards.json if not present
-      try {
-        saveDefaultStandards(repoRoot);
-        output.log(`Initialized default style standards in ${localDir}/config/n8n-standards.json`);
-      } catch (err) {
-        output.warn(`Could not initialize n8n-standards.json: ${err instanceof Error ? err.message : String(err)}`);
+      // Generate n8n-standards.json if missing or --reset is set
+      const standardsPath = path.join(repoRoot, localDir, 'config', 'n8n-standards.json');
+      if (options.reset || !fs.existsSync(standardsPath)) {
+        try {
+          saveDefaultStandards(repoRoot);
+          output.log(`${options.reset ? 'Reset' : 'Initialized'} default style standards in ${localDir}/config/n8n-standards.json`);
+        } catch (err) {
+          output.warn(`Could not initialize n8n-standards.json: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        output.log(`Using existing style standards in ${localDir}/config/n8n-standards.json`);
       }
 
-      // Automatically generate n8n-layout.json if not present
-      try {
-        saveDefaultLayoutSettings(repoRoot);
-        output.log(`Initialized default layout settings in ${localDir}/config/n8n-layout.json`);
-      } catch (err) {
-        output.warn(`Could not initialize n8n-layout.json: ${err instanceof Error ? err.message : String(err)}`);
+      // Generate n8n-layout.json if missing or --reset is set
+      const layoutPath = path.join(repoRoot, localDir, 'config', 'n8n-layout.json');
+      if (options.reset || !fs.existsSync(layoutPath)) {
+        try {
+          saveDefaultLayoutSettings(repoRoot);
+          output.log(`${options.reset ? 'Reset' : 'Initialized'} default layout settings in ${localDir}/config/n8n-layout.json`);
+        } catch (err) {
+          output.warn(`Could not initialize n8n-layout.json: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else {
+        output.log(`Using existing layout settings in ${localDir}/config/n8n-layout.json`);
       }
 
       output.log('\nGenerated config files:');
