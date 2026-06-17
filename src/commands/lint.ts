@@ -5,7 +5,7 @@ import { glob } from 'glob';
 import { execSync } from 'child_process';
 import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, loadLayoutSettings } from '../config.js';
 import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
-import { loadStandards, validateWorkflowAgainstStandards, fixWorkflowAgainstStandards, toSmartTitleCase } from '../lint-engine.js';
+import { loadStandards, validateWorkflowAgainstStandards, fixWorkflowAgainstStandards, toSmartTitleCase, diagnoseChainParentheses } from '../lint-engine.js';
 import { loadSyncState, saveSyncState, calculateHash } from '../sync-state.js';
 import * as output from '../output.js';
 import { loadNodesDatabase, autoLayoutIfChanged, layoutWorkflow } from '../layout-engine.js';
@@ -100,6 +100,10 @@ export function lintCommand(program: Command) {
 
             // Run standard validations
             let { errors, warnings } = validateWorkflowAgainstStandards(workflowJson, standards, relativePath);
+            try {
+              const diagWarnings = diagnoseChainParentheses(code);
+              warnings.push(...diagWarnings);
+            } catch (e) {}
 
             // Auto-fixing if requested
             const { modifiedJson, fixedCount } = fixWorkflowAgainstStandards(workflowJson, standards);
@@ -264,16 +268,27 @@ export function lintCommand(program: Command) {
             }
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
+            let diagWarnings: string[] = [];
+            try {
+              const content = fs.readFileSync(fullPath, 'utf-8');
+              diagWarnings = diagnoseChainParentheses(content);
+            } catch (diagErr) {}
+
+            let fullErrMsg = errMsg;
+            if (diagWarnings.length > 0) {
+              fullErrMsg += `\n    Diagnostic Warnings:\n    ` + diagWarnings.map(w => `⚠️  ${w}`).join('\n    ');
+            }
+
             if (output.getJsonMode()) {
               jsonResults.push({
                 file: relativePath,
                 success: false,
-                errors: [errMsg],
+                errors: [fullErrMsg],
                 warnings: []
               });
             } else {
               output.error(`[LINT-ERROR] ${relativePath}: Failed to parse/read file.`);
-              output.error(`  - ${errMsg}`);
+              output.error(`  - ${fullErrMsg}`);
             }
             overallSuccess = false;
           }

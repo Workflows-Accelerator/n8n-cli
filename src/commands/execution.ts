@@ -14,6 +14,7 @@ export function executionCommand(program: Command) {
     .argument('<execution-id>', 'execution ID')
     .option('--include-data', 'include node execution input/output data', false)
     .option('--nodes <names...>', 'filter execution data by specific node names')
+    .option('--node <names...>', 'filter execution data by specific node names (alias for --nodes)')
     .option('--truncate <n>', 'limit the number of data items returned per node output', parseInt)
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
@@ -44,17 +45,75 @@ export function executionCommand(program: Command) {
         output.log(`Retrieving execution details for ID ${executionId}...`);
 
         await withMcp(mcpCommand, accessToken, async (mcp) => {
-          const result = await mcp.callTool('get_execution', {
-            workflowId,
-            executionId,
-            includeData: options.includeData,
-            nodeNames: options.nodes,
-            truncateData: options.truncate,
-          });
+          const nodeFilters = options.node || options.nodes;
 
-          // Print results
-          const text = result.content?.find((c: any) => c.type === 'text')?.text;
-          output.log(text || 'No execution details returned.');
+          let execution: any = null;
+          try {
+            execution = await mcp.callToolAndGetJson('get_execution', {
+              workflowId,
+              executionId,
+              includeData: options.includeData,
+              nodeNames: nodeFilters,
+              truncateData: options.truncate,
+            });
+          } catch (err) {
+            // Fallback to text if JSON parsing fails
+          }
+
+          if (execution && typeof execution === 'object') {
+            if (output.getJsonMode()) {
+              output.log(JSON.stringify(execution, null, 2));
+              return;
+            }
+
+            // Print beautiful summary
+            output.log(`Execution ID: ${execution.id || executionId}`);
+            output.log(`Status:       ${execution.status || (execution.finished ? 'success' : 'failed')}`);
+            output.log(`Mode:         ${execution.mode || 'N/A'}`);
+            if (execution.startedAt) output.log(`Started At:   ${execution.startedAt}`);
+            if (execution.stoppedAt) output.log(`Stopped At:   ${execution.stoppedAt}`);
+
+            const runData = execution.data?.resultData?.runData;
+            if (runData && Object.keys(runData).length > 0) {
+              output.log(`\nNode Execution Details:`);
+              output.log(`========================================`);
+              for (const [nodeName, runs] of Object.entries(runData)) {
+                if (Array.isArray(runs)) {
+                  for (let idx = 0; idx < runs.length; idx++) {
+                    const run = runs[idx];
+                    const suffix = runs.length > 1 ? ` (Run ${idx + 1})` : '';
+                    const statusStr = run.error ? '❌ FAILED' : '✅ SUCCESS';
+                    output.log(`\nNode: ${nodeName}${suffix} [${statusStr}]`);
+                    if (run.executionTime !== undefined) {
+                      output.log(`  Duration: ${run.executionTime} ms`);
+                    }
+                    if (run.error) {
+                      output.error(`  Error:    ${run.error.message || JSON.stringify(run.error)}`);
+                      if (run.error.stack) {
+                        output.error(`  Stack:\n${run.error.stack}`);
+                      }
+                    }
+                    if (options.includeData && run.data) {
+                      output.log(`  Data:`);
+                      output.log(JSON.stringify(run.data, null, 2));
+                    }
+                  }
+                }
+              }
+            }
+          } else {
+            const result = await mcp.callTool('get_execution', {
+              workflowId,
+              executionId,
+              includeData: options.includeData,
+              nodeNames: nodeFilters,
+              truncateData: options.truncate,
+            });
+
+            // Print results
+            const text = result.content?.find((c: any) => c.type === 'text')?.text;
+            output.log(text || 'No execution details returned.');
+          }
         });
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));

@@ -1278,3 +1278,130 @@ export function validateStandardsJson(content: string): string[] {
 
   return errors;
 }
+
+export function diagnoseChainParentheses(content: string): string[] {
+  const warnings: string[] = [];
+  let i = 0;
+  const len = content.length;
+  
+  interface OpenParenContext {
+    charIndex: number;
+    line: number;
+    col: number;
+    methodName: string;
+    nodeName: string;
+  }
+  
+  const stack: OpenParenContext[] = [];
+  let line = 1;
+  let col = 1;
+  
+  while (i < len) {
+    const char = content[i];
+    
+    // Handle comments
+    if (char === '/' && content[i + 1] === '/') {
+      while (i < len && content[i] !== '\n') {
+        i++;
+      }
+      line++;
+      col = 1;
+      continue;
+    }
+    if (char === '/' && content[i + 1] === '*') {
+      i += 2;
+      while (i < len && !(content[i] === '*' && content[i + 1] === '/')) {
+        if (content[i] === '\n') {
+          line++;
+          col = 1;
+        } else {
+          col++;
+        }
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+    
+    // Handle string literals
+    if (char === "'" || char === '"' || char === '`') {
+      const quote = char;
+      i++;
+      while (i < len && content[i] !== quote) {
+        if (content[i] === '\\') {
+          i++;
+        }
+        if (content[i] === '\n') {
+          line++;
+          col = 1;
+        } else {
+          col++;
+        }
+        i++;
+      }
+      i++;
+      continue;
+    }
+    
+    // Keep track of newlines
+    if (char === '\n') {
+      line++;
+      col = 1;
+      i++;
+      continue;
+    }
+    
+    // Track open parentheses
+    if (char === '(') {
+      let ptr = i - 1;
+      while (ptr >= 0 && /\s/.test(content[ptr])) {
+        ptr--;
+      }
+      let methodIdentifier = '';
+      while (ptr >= 0 && /[a-zA-Z0-9_$]/.test(content[ptr])) {
+        methodIdentifier = content[ptr] + methodIdentifier;
+        ptr--;
+      }
+      let hasDot = false;
+      let nodeIdentifier = '';
+      if (ptr >= 0 && content[ptr] === '.') {
+        hasDot = true;
+        ptr--;
+        while (ptr >= 0 && /\s/.test(content[ptr])) {
+          ptr--;
+        }
+        while (ptr >= 0 && /[a-zA-Z0-9_$]/.test(content[ptr])) {
+          nodeIdentifier = content[ptr] + nodeIdentifier;
+          ptr--;
+        }
+      }
+      
+      stack.push({
+        charIndex: i,
+        line,
+        col,
+        methodName: hasDot ? methodIdentifier : '',
+        nodeName: nodeIdentifier || 'unknown node'
+      });
+    } else if (char === ')') {
+      if (stack.length === 0) {
+        warnings.push(`Unmatched closing parenthesis at line ${line}, col ${col}`);
+      } else {
+        stack.pop();
+      }
+    }
+    
+    col++;
+    i++;
+  }
+  
+  const targetMethods = ['onTrue', 'onFalse', 'onCase', 'to'];
+  for (const open of stack) {
+    if (targetMethods.includes(open.methodName)) {
+      warnings.push(`.${open.methodName}() of Node/Branch '${open.nodeName}' at line ${open.line} is not closed.`);
+    }
+  }
+  
+  return warnings;
+}
+

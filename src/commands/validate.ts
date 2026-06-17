@@ -6,7 +6,7 @@ import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertT
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
-import { loadStandards, validateWorkflowAgainstStandards, isIgnored } from '../lint-engine.js';
+import { loadStandards, validateWorkflowAgainstStandards, isIgnored, diagnoseChainParentheses } from '../lint-engine.js';
 import { loadSyncState, calculateHash } from '../sync-state.js';
 import { loadNodesDatabase } from '../layout-engine.js';
 
@@ -176,7 +176,17 @@ export function validateCommand(program: Command) {
             }
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            parsedWorkflows.push({ file, relativePath, parseError: errMsg });
+            let diagWarnings: string[] = [];
+            try {
+              const content = fs.readFileSync(file, 'utf-8');
+              diagWarnings = diagnoseChainParentheses(content);
+            } catch (diagErr) {}
+
+            let fullErrMsg = errMsg;
+            if (diagWarnings.length > 0) {
+              fullErrMsg += `\n    Diagnostic Warnings:\n    ` + diagWarnings.map(w => `⚠️  ${w}`).join('\n    ');
+            }
+            parsedWorkflows.push({ file, relativePath, parseError: fullErrMsg });
           }
         }
 
@@ -275,6 +285,12 @@ export function validateCommand(program: Command) {
             } catch (err) {
               errors.push(`Lint checks failed to run: ${err instanceof Error ? err.message : String(err)}`);
             }
+
+            try {
+              const content = fs.readFileSync(pw.file, 'utf-8');
+              const diagWarnings = diagnoseChainParentheses(content);
+              warnings.push(...diagWarnings);
+            } catch (e) {}
           }
 
           // Node version validation

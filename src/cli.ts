@@ -24,6 +24,7 @@ import { lintCommand } from './commands/lint.js';
 import { standardsCommand } from './commands/standards.js';
 import { layoutCommand } from './commands/layout.js';
 import { liveCommand } from './commands/live.js';
+import { datatablesCommand } from './commands/datatables.js';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +71,7 @@ lintCommand(program);
 standardsCommand(program);
 layoutCommand(program);
 liveCommand(program);
+datatablesCommand(program);
 
 
 // Parse arguments asynchronously

@@ -158,7 +158,12 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
   - \`n8ncli env delete <name>\`: Delete an environment configuration.
 - \`n8ncli init [--reset]\`: Initialize workspace config. Use \`--reset\` to reset standards and layout configurations and delete local caches.
 - \`n8ncli projects\`: List accessible projects.
-- \`n8ncli folders\`: List folders under the project.
+- \`n8ncli folders\`: List and manage folders in an n8n project.
+  - \`n8ncli folders list\`: List folders under the project.
+  - \`n8ncli folders create <name>\`: Create a new folder directly in the database.
+  - \`n8ncli folders move <workflow-id-or-path> <folder-id-or-name>\`: Move a workflow to a specific folder in the database.
+  - \`n8ncli folders delete <folder-id-or-name> [--no-cascade]\`: Delete a folder from the database.
+  - \`n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name>\`: Set parent folder for a folder in the database.
 - \`n8ncli lint [--fix] [--only-modified]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files).
 
 ### Syncing
@@ -172,9 +177,14 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli validate [files...] [--lint] [--only-modified]\`: Validate syntax, schema, and node versions (and optionally standards style checks, optionally restricted to modified files).
 - \`n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]\`: Execute workflow.
 - \`n8ncli test <file-or-id> [--pin-data <file>]\`: Test run with mock pin data.
-- \`n8ncli execution <file-or-id> <execution-id> [--include-data]\`: Inspect execution details.
+- \`n8ncli execution <file-or-id> <execution-id> [--include-data] [--node <name>]\`: Inspect execution details. Specify --include-data to output raw JSON node input/output payload.
 - \`n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]\`: Auto-position nodes in n8n workflows using Dagre (resolving parameters from command line, n8n-layout.json, and n8n-cli.json).
 
+### Database Datatables
+- \`n8ncli datatables\`: Inspect and update n8n database tracking datatables.
+  - \`n8ncli datatables list\`: List user tables in the database.
+  - \`n8ncli datatables query <table-name> [--filter <filter>] [--limit <n>]\`: Query rows from a table.
+  - \`n8ncli datatables update <table-name> --data <json> [--filter <filter>]\`: Update rows in a table.
 
 ### Publishing & Nodes
 - \`n8ncli publish <file-or-id>\`: Activate a workflow for production triggers.

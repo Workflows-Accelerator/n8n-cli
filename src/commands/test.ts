@@ -61,6 +61,137 @@ async function findWorkflowIdByName(mcp: any, projectId: string, name: string): 
   }
 }
 
+function injectVirtualTriggerIfNeeded(json: any): { modified: boolean; code: string } {
+  if (!json.nodes || !Array.isArray(json.nodes) || json.nodes.length === 0) {
+    return { modified: false, code: '' };
+  }
+
+  // Check if there is already a trigger node
+  const hasTrigger = json.nodes.some((node: any) => {
+    const typeLower = (node.type || '').toLowerCase();
+    return typeLower.endsWith('trigger') || typeLower.includes('manualtrigger') || typeLower.includes('webhook') || typeLower.includes('form') || typeLower.includes('onpublish');
+  });
+
+  if (hasTrigger) {
+    return { modified: false, code: '' };
+  }
+
+  // Find nodes with no incoming connections
+  const nodeNames = new Set(json.nodes.map((n: any) => n.name));
+  const hasIncoming = new Set<string>();
+
+  if (json.connections) {
+    for (const fromNode of Object.keys(json.connections)) {
+      const targetsObj = json.connections[fromNode];
+      if (targetsObj) {
+        for (const connectionType of Object.keys(targetsObj)) {
+          const branches = targetsObj[connectionType];
+          if (Array.isArray(branches)) {
+            for (const branch of branches) {
+              if (Array.isArray(branch)) {
+                for (const conn of branch) {
+                  if (conn && conn.node) {
+                    hasIncoming.add(conn.node);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  const firstNodes: string[] = [];
+  let firstNodePos = [100, 200];
+  let foundPos = false;
+  for (const node of json.nodes) {
+    if (!hasIncoming.has(node.name)) {
+      firstNodes.push(node.name);
+      if (!foundPos && node.position && Array.isArray(node.position)) {
+        firstNodePos = [node.position[0], node.position[1]];
+        foundPos = true;
+      }
+    }
+  }
+
+  if (firstNodes.length === 0 && json.nodes.length > 0) {
+    const fallbackNode = json.nodes[0];
+    firstNodes.push(fallbackNode.name);
+    if (fallbackNode.position && Array.isArray(fallbackNode.position)) {
+      firstNodePos = [fallbackNode.position[0], fallbackNode.position[1]];
+    }
+  }
+
+  const virtualTriggerName = 'Virtual Start';
+  json.nodes.push({
+    name: virtualTriggerName,
+    type: 'n8n-nodes-base.manualTrigger',
+    typeVersion: 1,
+    position: [firstNodePos[0] - 200, firstNodePos[1]],
+    parameters: {}
+  });
+
+  if (!json.connections) {
+    json.connections = {};
+  }
+  json.connections[virtualTriggerName] = {
+    main: [
+      firstNodes.map(nodeName => ({
+        node: nodeName,
+        type: 'main',
+        index: 0
+      }))
+    ]
+  };
+
+  output.log(`No trigger node found. Automatically injected '${virtualTriggerName}' connected to: ${firstNodes.join(', ')}`);
+  
+  return {
+    modified: true,
+    code: generateWorkflowCode(json)
+  };
+}
+
+async function printFailedNodeDetails(mcp: any, workflowId: string, executionId: string) {
+  try {
+    output.log(`\nRetrieving failed node details for execution ${executionId}...`);
+    const execution = await mcp.callToolAndGetJson('get_execution', {
+      workflowId,
+      executionId,
+      includeData: true
+    });
+
+    if (execution && execution.data && execution.data.resultData && execution.data.resultData.runData) {
+      const runData = execution.data.resultData.runData;
+      let foundFailedNode = false;
+      for (const [nodeName, runs] of Object.entries(runData)) {
+        if (Array.isArray(runs)) {
+          for (const run of runs) {
+            if (run.error) {
+              foundFailedNode = true;
+              output.error(`\n❌ Node '${nodeName}' FAILED:`);
+              output.error(`   Error Message: ${run.error.message || run.error.description || JSON.stringify(run.error)}`);
+              if (run.error.stack) {
+                output.error(`   Stack Trace:\n${run.error.stack}`);
+              }
+              if (run.data && run.data.main) {
+                output.log(`   Node Input/Output Data:`);
+                output.log(JSON.stringify(run.data.main, null, 2));
+              }
+            }
+          }
+        }
+      }
+      if (!foundFailedNode) {
+        output.log(`No specific node errors found in execution runData.`);
+      }
+    }
+  } catch (err) {
+    output.debug(`Failed to retrieve detailed node execution error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export function testCommand(program: Command) {
   program
     .command('test')
@@ -101,6 +232,9 @@ export function testCommand(program: Command) {
               const json = builder.toJSON();
               originalName = json.name || 'Workflow';
               
+              // Inject virtual manual trigger if no trigger node exists
+              injectVirtualTriggerIfNeeded(json);
+              
               // Generate random unique ID and prefix name to avoid conflicts
               const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
               let tempId = '';
@@ -122,6 +256,30 @@ export function testCommand(program: Command) {
           let runWfId = workflowId;
           let tempFolderId: string | undefined = undefined;
           let deployedTempWfId: string | null = null;
+
+          // If not a local file, check remote workflow for triggers
+          if (!isLocalFile) {
+            try {
+              const details = await mcp.callToolAndGetJson('get_workflow_details', { workflowId: runWfId, id: runWfId });
+              if (details) {
+                const injection = injectVirtualTriggerIfNeeded(details);
+                if (injection.modified) {
+                  originalName = details.name || 'Workflow';
+                  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                  let tempId = '';
+                  for (let i = 0; i < 16; i++) {
+                    tempId += chars.charAt(Math.floor(Math.random() * chars.length));
+                  }
+                  details.id = tempId;
+                  details.name = `[Temp Test] ${originalName}`;
+                  tempCode = generateWorkflowCode(details);
+                  isLocalFile = true;
+                }
+              }
+            } catch (err) {
+              output.debug(`Failed to check remote workflow for triggers: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
 
           if (isLocalFile && tempCode) {
             const projectId = config?.projectId;
@@ -233,8 +391,17 @@ export function testCommand(program: Command) {
               triggerNodeName: options.trigger,
             });
 
-            const text = testResult.content?.find((c: any) => c.type === 'text')?.text;
+            const text = testResult.content?.find((c: any) => c.type === 'text')?.text || '';
             output.log(text || 'Test run succeeded.');
+
+            // Check if test execution failed and print detailed error log
+            if (text.toLowerCase().includes('fail') || text.toLowerCase().includes('error')) {
+              const execIdMatch = text.match(/(?:execution\s*id|id):\s*([a-zA-Z0-9_-]+)/i);
+              if (execIdMatch) {
+                const executionId = execIdMatch[1];
+                await printFailedNodeDetails(mcp, runWfId, executionId);
+              }
+            }
           } finally {
             // 5. Cleanup Temporary Workflow & Folder
             if (dbUrl) {

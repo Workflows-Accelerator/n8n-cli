@@ -135,10 +135,31 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
 - Outputs list of projects in the format: `<id> <name> (<type>)`.
 
 ### `n8ncli folders`
-```bash
-n8ncli folders --project-id <id> [--query <q>] [--limit <n>]
-```
-- Outputs list of folders inside a project in the format: `<id> <name>`.
+- `n8ncli folders list` (default):
+  ```bash
+  n8ncli folders list --project-id <id> [--query <q>] [--limit <n>]
+  ```
+  Outputs list of folders inside a project in the format: `<id> <name>`.
+- `n8ncli folders create <name>`:
+  ```bash
+  n8ncli folders create <name> --project-id <id> [--parent-folder-id <id>] [--db-url <url>]
+  ```
+  Creates a new folder directly in the n8n database.
+- `n8ncli folders move <workflow-id-or-path> <folder-id-or-name>`:
+  ```bash
+  n8ncli folders move <workflow-id-or-path> <folder-id-or-name> [--db-url <url>]
+  ```
+  Moves a workflow to a specific folder (or `root`) directly in the n8n database.
+- `n8ncli folders delete <folder-id-or-name>`:
+  ```bash
+  n8ncli folders delete <folder-id-or-name> [--no-cascade] [--db-url <url>]
+  ```
+  Deletes a folder from the n8n database. If `--no-cascade` is set, workflows and child folders in it are moved to root instead of being deleted.
+- `n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name>`:
+  ```bash
+  n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name> [--db-url <url>]
+  ```
+  Sets a parent folder for a folder directly in the n8n database.
 
 ### `n8ncli pull`
 ```bash
@@ -203,9 +224,9 @@ n8ncli test <workflow-id-or-file> [--pin-data <json-file>]
 
 ### `n8ncli execution`
 ```bash
-n8ncli execution <workflow-id-or-file> <execution-id> [--include-data] [--nodes <names...>]
+n8ncli execution <workflow-id-or-file> <execution-id> [--include-data] [--nodes <names...>] [--node <names...>] [--truncate <n>]
 ```
-- Retrieves status, duration, error messages, and output payload from a run execution.
+- Retrieves status, duration, error messages, and output payload from a run execution. Supports alias `--node` for `--nodes`. If `--include-data` is specified, prints the full JSON input/output data of individual nodes.
 
 ### `n8ncli publish` / `unpublish`
 ```bash
@@ -227,6 +248,23 @@ n8ncli unpublish <workflow-id-or-file>
 n8ncli sdk [section-or-query]
 ```
 - Prints n8n Workflow SDK documentation. Supports specific sections (`patterns`, `expressions`, `functions`, `guidelines`, `design`, `all`) or case-insensitive keyword search filtering.
+
+### `n8ncli datatables`
+- `n8ncli datatables list` (default):
+  ```bash
+  n8ncli datatables list [--db-url <url>]
+  ```
+  Lists all user tables in the n8n PostgreSQL database.
+- `n8ncli datatables query <table-name>`:
+  ```bash
+  n8ncli datatables query <table-name> [--filter <filter>] [--limit <n>] [--db-url <url>]
+  ```
+  Queries rows from a specific table, applying an optional SQL filter and row limit.
+- `n8ncli datatables update <table-name>`:
+  ```bash
+  n8ncli datatables update <table-name> --data <json> [--filter <filter>] [--db-url <url>]
+  ```
+  Updates rows in a specific table with JSON data, applying an optional SQL filter.
 
 ### `n8ncli environments` / `env`
 - `n8ncli env list` (or `n8ncli env` / `envs`): Lists all configured n8n environments from the global configuration (~/.n8ncli-global.json).
