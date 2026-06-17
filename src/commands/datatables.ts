@@ -11,6 +11,7 @@ export function datatablesCommand(program: Command) {
   datatables
     .command('list', { isDefault: true })
     .description('List user tables in n8n PostgreSQL database')
+    .option('--json', 'output raw JSON format')
     .option('--db-url <url>', 'n8n PostgreSQL database connection URL')
     .action(async (options) => {
       try {
@@ -62,6 +63,7 @@ export function datatablesCommand(program: Command) {
     .description('Query rows from a database table')
     .option('--filter <filter>', 'SQL WHERE filter condition')
     .option('--limit <n>', 'limit the number of rows returned', parseInt)
+    .option('--json', 'output raw JSON format')
     .option('--db-url <url>', 'n8n PostgreSQL database connection URL')
     .action(async (tableName, options) => {
       try {

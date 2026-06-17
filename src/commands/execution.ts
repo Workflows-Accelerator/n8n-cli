@@ -16,6 +16,7 @@ export function executionCommand(program: Command) {
     .option('--nodes <names...>', 'filter execution data by specific node names')
     .option('--node <names...>', 'filter execution data by specific node names (alias for --nodes)')
     .option('--truncate <n>', 'limit the number of data items returned per node output', parseInt)
+    .option('--json', 'output raw JSON format')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .action(async (target, executionId, options) => {

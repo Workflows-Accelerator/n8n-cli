@@ -10,6 +10,7 @@ export function statusCommand(program: Command) {
   program
     .command('status')
     .description('Show local changes compared to the last sync state')
+    .option('--json', 'output raw JSON format')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .option('--api-key <key>', 'override n8n REST API key')

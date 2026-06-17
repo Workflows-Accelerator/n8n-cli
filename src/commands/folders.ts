@@ -29,6 +29,25 @@ async function getWorkflowFolderColumn(client: any): Promise<string> {
   return found || 'parentFolderId';
 }
 
+interface FolderNode {
+  id: string;
+  name: string;
+  parentFolderId: string | null;
+  children: FolderNode[];
+}
+
+function printFolderTree(nodes: FolderNode[], prefix: string = '') {
+  for (let i = 0; i < nodes.length; i++) {
+    const isLast = i === nodes.length - 1;
+    const connector = isLast ? '└── ' : '├── ';
+    output.log(`${prefix}${connector}${nodes[i].name} (ID: ${nodes[i].id})`);
+    if (nodes[i].children.length > 0) {
+      const nextPrefix = prefix + (isLast ? '    ' : '│   ');
+      printFolderTree(nodes[i].children, nextPrefix);
+    }
+  }
+}
+
 export function foldersCommand(program: Command) {
   const folders = program
     .command('folders')
@@ -40,6 +59,10 @@ export function foldersCommand(program: Command) {
     .option('--project-id <id>', 'n8n project ID (defaults to config file projectId)')
     .option('--query <q>', 'filter folders by name query')
     .option('--limit <n>', 'limit the number of folders returned', parseInt)
+    .option('--recursive', 'recursively list folder tree hierarchy')
+    .option('--tree', 'list folders in a hierarchical tree layout')
+    .option('--parent-folder-id <id>', 'list immediate children of a specific folder ID')
+    .option('--json', 'output in structured JSON format')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
@@ -60,18 +83,75 @@ export function foldersCommand(program: Command) {
 
           const foldersList = Array.isArray(response) ? response : (response.folders || []);
 
-          if (output.getJsonMode()) {
-            console.log(JSON.stringify(foldersList, null, 2));
+          // Build folder node map
+          const folderMap = new Map<string, FolderNode>();
+          for (const f of foldersList) {
+            folderMap.set(f.id, {
+              id: f.id,
+              name: f.name,
+              parentFolderId: f.parentFolderId || null,
+              children: []
+            });
+          }
+
+          // Link children to parents
+          for (const node of folderMap.values()) {
+            if (node.parentFolderId && folderMap.has(node.parentFolderId)) {
+              folderMap.get(node.parentFolderId)!.children.push(node);
+            }
+          }
+
+          // Filter by parent folder ID if specified
+          let targets: FolderNode[] = [];
+          if (options.parentFolderId) {
+            const parentId = options.parentFolderId;
+            const isRootParent = ['root', 'null', 'none', 'undefined'].includes(parentId.toLowerCase());
+            if (isRootParent) {
+              targets = Array.from(folderMap.values()).filter(n => !n.parentFolderId);
+            } else {
+              const parentNode = folderMap.get(parentId);
+              if (parentNode) {
+                targets = parentNode.children;
+              } else {
+                targets = Array.from(folderMap.values()).filter(n => n.parentFolderId === parentId);
+              }
+            }
+          } else {
+            // No parent filter, show roots (folders with no parent in our map)
+            targets = Array.from(folderMap.values()).filter(n => !n.parentFolderId || !folderMap.has(n.parentFolderId));
+          }
+
+          if (options.tree || options.recursive) {
+            if (output.getJsonMode() || options.json) {
+              console.log(JSON.stringify(targets, null, 2));
+              return;
+            }
+            if (targets.length === 0) {
+              output.log('No folders found.');
+              return;
+            }
+            printFolderTree(targets);
             return;
           }
 
-          if (foldersList.length === 0) {
+          // Default view: Flat list of targets
+          const flatList: any[] = [];
+          for (const n of targets) {
+            flatList.push(n);
+          }
+
+          if (output.getJsonMode() || options.json) {
+            console.log(JSON.stringify(flatList.map(f => ({ id: f.id, name: f.name, parentFolderId: f.parentFolderId })), null, 2));
+            return;
+          }
+
+          if (flatList.length === 0) {
             output.log('No folders found.');
             return;
           }
 
-          const headers = ['Folder ID', 'Folder Name', 'Project ID'];
-          const rows = foldersList.map((f: any) => [f.id, f.name, f.projectId || projectId]);
+          const headers = ['Folder ID', 'Folder Name', 'Parent Folder ID'];
+          const rows = flatList.map(f => [f.id, f.name, f.parentFolderId || 'root']);
           
           output.table(headers, rows);
         }, instanceUrl);
@@ -210,6 +290,7 @@ export function foldersCommand(program: Command) {
     .command('delete <folder-id-or-name>')
     .description('Delete a folder from n8n database')
     .option('--no-cascade', 'move workflows and child folders to root instead of deleting them')
+    .option('--dry-run', 'simulate folder deletion without modifying the database')
     .option('--db-url <url>', 'n8n PostgreSQL database connection URL')
     .action(async (folderIdOrName, options) => {
       try {
@@ -255,31 +336,50 @@ export function foldersCommand(program: Command) {
             }
           }
 
+          // Find all workflows in the folders subtree
+          const wfRes = await client.query(
+            `SELECT id, name FROM workflow_entity WHERE "${folderCol}" = ANY($1);`,
+            [allFolderIds]
+          );
+          const wfIds = wfRes.rows.map((r: any) => r.id);
+          const wfNames = wfRes.rows.map((r: any) => `'${r.name}' (ID: ${r.id})`);
+
+          // Dry Run Mode
+          if (options.dryRun) {
+            output.log(`[DRY RUN] Folder deletion simulation for '${folderName}' (ID: ${folderId})`);
+            if (options.cascade === false) {
+              output.log(`[DRY RUN] Would move ${wfNames.length} workflows in subtree to root:`);
+              wfNames.forEach(name => output.log(`  - ${name}`));
+              output.log(`[DRY RUN] Would move child folders of '${folderName}' to root.`);
+              output.log(`[DRY RUN] Would delete folder '${folderName}' (ID: ${folderId})`);
+            } else {
+              output.log(`[DRY RUN] Would delete folder '${folderName}' (ID: ${folderId}) and cascade delete:`);
+              output.log(`  - ${allFolderIds.length - 1} subfolders`);
+              output.log(`  - ${wfNames.length} workflows:`);
+              wfNames.forEach(name => output.log(`    - ${name}`));
+            }
+            return;
+          }
+
+          // Safety Warning in normal run
+          output.warn(`WARNING: Performing folder deletion on '${folderName}' (ID: ${folderId}).`);
+
           // If no-cascade is set, we move workflows/subfolders to root
           if (options.cascade === false) {
             output.log(`Moving workflows and subfolders in folder tree of '${folderName}' to root...`);
-            // Set all workflows in the subtree folders to parentFolderId = null
             await client.query(
               `UPDATE workflow_entity SET "${folderCol}" = NULL WHERE "${folderCol}" = ANY($1);`,
               [allFolderIds]
             );
-            // For child folders of the main folder, set their parentFolderId to null
             await client.query(
               'UPDATE folder SET "parentFolderId" = NULL WHERE "parentFolderId" = $1;',
               [folderId]
             );
-            // Delete the main folder itself
             await client.query('DELETE FROM folder WHERE id = $1;', [folderId]);
             output.log(`Successfully deleted folder '${folderName}' (workflows/subfolders moved to root).`);
           } else {
             // Cascade delete everything in the subtree
             output.log(`Cascade deleting workflows and subfolders in folder tree of '${folderName}'...`);
-            // Find all workflows in the folders subtree
-            const wfRes = await client.query(
-              `SELECT id, name FROM workflow_entity WHERE "${folderCol}" = ANY($1);`,
-              [allFolderIds]
-            );
-            const wfIds = wfRes.rows.map((r: any) => r.id);
 
             if (wfIds.length > 0) {
               output.log(`Deleting execution data and workflow entities for ${wfIds.length} workflows...`);
@@ -308,6 +408,7 @@ export function foldersCommand(program: Command) {
   folders
     .command('set-parent <folder-id-or-name> <parent-folder-id-or-name>')
     .description('Set parent folder for a folder directly in n8n database')
+    .option('--dry-run', 'simulate moving folder parent relationship without modifying the database')
     .option('--db-url <url>', 'n8n PostgreSQL database connection URL')
     .action(async (folderIdOrName, parentFolderIdOrName, options) => {
       try {
@@ -327,7 +428,7 @@ export function foldersCommand(program: Command) {
         try {
           // Find folder ID
           const folderRes = await client.query(
-            'SELECT id, name FROM folder WHERE id = $1 OR name = $2;',
+            'SELECT id, name, "parentFolderId" FROM folder WHERE id = $1 OR name = $2;',
             [folderIdOrName, folderIdOrName]
           );
           if (folderRes.rows.length === 0) {
@@ -335,6 +436,16 @@ export function foldersCommand(program: Command) {
           }
           const folderId = folderRes.rows[0].id;
           const folderName = folderRes.rows[0].name;
+
+          // Retrieve previous parent details
+          const currentParentId = folderRes.rows[0].parentFolderId;
+          let currentParentName = 'root';
+          if (currentParentId) {
+            const prevRes = await client.query('SELECT name FROM folder WHERE id = $1;', [currentParentId]);
+            if (prevRes.rows.length > 0) {
+              currentParentName = prevRes.rows[0].name;
+            }
+          }
 
           // Find parent folder ID
           let parentFolderId: string | null = null;
@@ -358,12 +469,18 @@ export function foldersCommand(program: Command) {
             throw new Error('A folder cannot be its own parent.');
           }
 
+          // Dry Run Mode
+          if (options.dryRun) {
+            output.log(`[DRY RUN] Would move folder '${folderName}' (ID: ${folderId}) from parent '${currentParentName}' (ID: ${currentParentId || 'root'}) to parent '${parentFolderName}' (ID: ${parentFolderId || 'root'})`);
+            return;
+          }
+
           await client.query(
             'UPDATE folder SET "parentFolderId" = $1, "updatedAt" = NOW() WHERE id = $2;',
             [parentFolderId, folderId]
           );
 
-          output.log(`Successfully set parent of folder '${folderName}' (ID: ${folderId}) to '${parentFolderName}' (ID: ${parentFolderId || 'root'})`);
+          output.log(`Successfully moved folder '${folderName}' (ID: ${folderId}) from parent '${currentParentName}' (ID: ${currentParentId || 'root'}) to parent '${parentFolderName}' (ID: ${parentFolderId || 'root'})`);
         } finally {
           await client.end();
         }

@@ -137,9 +137,9 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
 ### `n8ncli folders`
 - `n8ncli folders list` (default):
   ```bash
-  n8ncli folders list --project-id <id> [--query <q>] [--limit <n>]
+  n8ncli folders list --project-id <id> [--query <q>] [--limit <n>] [--recursive] [--tree] [--parent-folder-id <id>] [--json]
   ```
-  Outputs list of folders inside a project in the format: `<id> <name>`.
+  Outputs list of folders inside a project. If `--recursive` or `--tree` is specified, lists all nested folders recursively (using a visual tree layout for `--tree`). If `--parent-folder-id` is provided, lists only immediate children of that folder. Supports `--json` for structured output.
 - `n8ncli folders create <name>`:
   ```bash
   n8ncli folders create <name> --project-id <id> [--parent-folder-id <id>] [--db-url <url>]
@@ -152,14 +152,14 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
   Moves a workflow to a specific folder (or `root`) directly in the n8n database.
 - `n8ncli folders delete <folder-id-or-name>`:
   ```bash
-  n8ncli folders delete <folder-id-or-name> [--no-cascade] [--db-url <url>]
+  n8ncli folders delete <folder-id-or-name> [--no-cascade] [--db-url <url>] [--dry-run]
   ```
-  Deletes a folder from the n8n database. If `--no-cascade` is set, workflows and child folders in it are moved to root instead of being deleted.
+  Deletes a folder from the n8n database. If `--no-cascade` is set, workflows and child folders in it are moved to root instead of being deleted. Prints warning details and affected workflows/folders if `--dry-run` is active.
 - `n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name>`:
   ```bash
-  n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name> [--db-url <url>]
+  n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name> [--db-url <url>] [--dry-run]
   ```
-  Sets a parent folder for a folder directly in the n8n database.
+  Sets a parent folder for a folder directly in the n8n database. Logs the previous parent name/ID. Prints affected items if `--dry-run` is active.
 
 ### `n8ncli pull`
 ```bash
@@ -203,12 +203,13 @@ n8ncli diff <file> [--semantic]
 - **Semantic Diffing (`--semantic`)**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff, preventing coordinate changes from creating noise in the diff output.
 
 ### `n8ncli validate`
-```bash
-n8ncli validate [files...] [--lint] [--only-modified]
-```
-- Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `2` on validation failure.
-- **`--lint`**: Runs standards style checks alongside schema validation.
-- **`--only-modified`**: Only validates workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
+  ```bash
+  n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]
+  ```
+  - Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `2` on validation failure or if `--fail-on-warnings` is specified and warnings are detected.
+  - **`--lint`**: Runs standards style checks alongside schema validation.
+  - **`--only-modified`**: Only validates workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
+  - **`--fail-on-warnings`**: Fails with exit code `2` if any warnings are detected.
 
 ### `n8ncli exec`
 ```bash
@@ -273,12 +274,13 @@ n8ncli sdk [section-or-query]
 - `n8ncli env delete <name>` (or `remove`): Removes an environment configuration from global config settings.
 
 ### `n8ncli lint`
-```bash
-n8ncli lint [--fix] [--only-modified]
-```
-- Validates local workflow style standards against `n8n-standards.json`.
-- Automatically corrects duplicate node name formatting and expression connections when `--fix` is passed.
-- **`--only-modified`**: Only runs lint checks on workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
+  ```bash
+  n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]
+  ```
+  - Validates local workflow style standards against `n8n-standards.json`.
+  - Automatically corrects duplicate node name formatting and expression connections when `--fix` is passed.
+  - **`--only-modified`**: Only runs lint checks on workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
+  - **`--fail-on-warnings`**: Fails with exit code `2` if any warnings are detected.
 
 ### `n8ncli standards`
 - `n8ncli standards validate`: Validates syntax, structure, and constraints of `n8n-standards.json`.
@@ -381,8 +383,8 @@ Workflows can be ignored from status, push synchronization, schema validation, a
 - **Local Config:** Add glob patterns/filenames under `ignorePush` in `n8n/config/n8n-cli.json`.
 
 ### 5.7 Differentiated Exit Codes
-The CLI utilizes exit codes to allow programmatic integration with AI agents:
-- **`0`**: Successful command completion.
-- **`1`**: General runtime execution or connection error.
-- **`2`**: Validation failures (validation errors detected during `validate` or `lint`).
-- **`3`**: Synchronization conflicts (local/remote modifications diverged during `pull` or `push` without `--force`).
+  The CLI utilizes exit codes to allow programmatic integration with AI agents:
+  - **`0`**: Successful command completion (warnings do not fail by default).
+  - **`1`**: General runtime execution or connection error.
+  - **`2`**: Validation failures (validation errors detected during `validate` or `lint`, or warnings when `--fail-on-warnings` is specified).
+  - **`3`**: Synchronization conflicts (local/remote modifications diverged during `pull` or `push` without `--force`).

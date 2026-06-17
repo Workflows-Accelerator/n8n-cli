@@ -10,6 +10,7 @@ export function projectsCommand(program: Command) {
     .option('--query <q>', 'filter projects by name query')
     .option('--type <type>', 'filter by project type (personal or team)')
     .option('--limit <n>', 'limit the number of projects returned', parseInt)
+    .option('--json', 'output raw JSON format')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {

@@ -47,6 +47,7 @@ export function validateCommand(program: Command) {
     .option('--env <name>', 'override environment name')
     .option('--lint', 'also run standards lint checks alongside validation')
     .option('--only-modified', 'only validate files that have local modifications', false)
+    .option('--fail-on-warnings', 'fail with exit code 2 if any warnings are detected')
     .action(async (files, options) => {
       try {
         await loadNodesDatabase();
@@ -339,7 +340,8 @@ export function validateCommand(program: Command) {
                 output.warn(`  - [WARNING] ${warn}`);
               }
             }
-            if (hasErrors || hasLintWarnings) {
+            const failOnWarnings = !!options.failOnWarnings;
+            if (hasErrors || (failOnWarnings && warnings.length > 0)) {
               overallSuccess = false;
             }
           } else {

@@ -124,7 +124,8 @@ export function environmentsCommand(program: Command) {
     .command('environments')
     .alias('envs')
     .alias('env')
-    .description('Manage and test n8n environments');
+    .description('Manage and test n8n environments')
+    .option('--json', 'output raw JSON format');
 
   // Default action: List environments
   envs.action(async () => {
@@ -139,6 +140,7 @@ export function environmentsCommand(program: Command) {
   envs
     .command('list')
     .description('List all configured n8n environments')
+    .option('--json', 'output raw JSON format')
     .action(async () => {
       try {
         await listEnvironments();

@@ -159,12 +159,12 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli init [--reset]\`: Initialize workspace config. Use \`--reset\` to reset standards and layout configurations and delete local caches.
 - \`n8ncli projects\`: List accessible projects.
 - \`n8ncli folders\`: List and manage folders in an n8n project.
-  - \`n8ncli folders list\`: List folders under the project.
+  - \`n8ncli folders list [--recursive] [--tree] [--parent-folder-id <id>] [--json]\`: List folders under the project. Supports visual tree or recursive view and parent folder filtering.
   - \`n8ncli folders create <name>\`: Create a new folder directly in the database.
   - \`n8ncli folders move <workflow-id-or-path> <folder-id-or-name>\`: Move a workflow to a specific folder in the database.
-  - \`n8ncli folders delete <folder-id-or-name> [--no-cascade]\`: Delete a folder from the database.
-  - \`n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name>\`: Set parent folder for a folder in the database.
-- \`n8ncli lint [--fix] [--only-modified]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files).
+  - \`n8ncli folders delete <folder-id-or-name> [--no-cascade] [--dry-run]\`: Delete a folder from the database (supporting dry-run protection).
+  - \`n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name> [--dry-run]\`: Set parent folder for a folder in the database (logs previous parent, supports dry-run protection).
+- \`n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
 
 ### Syncing
 - \`n8ncli pull [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata, or simulate the pull without writing to disk.
@@ -174,7 +174,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli diff <file> [--semantic]\`: Show line diff of a local file against remote (use \`--semantic\` to ignore node coordinate/position differences).
 
 ### Verification & Testing
-- \`n8ncli validate [files...] [--lint] [--only-modified]\`: Validate syntax, schema, and node versions (and optionally standards style checks, optionally restricted to modified files).
+- \`n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]\`: Validate syntax, schema, and node versions (and optionally standards style checks, optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
 - \`n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]\`: Execute workflow.
 - \`n8ncli test <file-or-id> [--pin-data <file>]\`: Test run with mock pin data.
 - \`n8ncli execution <file-or-id> <execution-id> [--include-data] [--node <name>]\`: Inspect execution details. Specify --include-data to output raw JSON node input/output payload.

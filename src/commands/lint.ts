@@ -29,6 +29,7 @@ export function lintCommand(program: Command) {
     .description('Enforce n8n workflow conventions and naming standards')
     .option('--fix', 'auto-fix naming conventions and suffixes')
     .option('--only-modified', 'only lint files that have local modifications', false)
+    .option('--fail-on-warnings', 'fail with exit code 2 if any warnings are detected')
     .action(async (options) => {
       try {
         await loadNodesDatabase();
@@ -240,7 +241,7 @@ export function lintCommand(program: Command) {
             if (output.getJsonMode()) {
               jsonResults.push({
                 file: relativePath,
-                success: !hasErrors && !hasWarnings,
+                success: !hasErrors && !(options.failOnWarnings && hasWarnings),
                 errors,
                 warnings
               });
@@ -260,7 +261,10 @@ export function lintCommand(program: Command) {
                   output.warn(`  - [WARNING] ${warn}`);
                 }
               }
-              overallSuccess = false;
+              const failOnWarnings = !!options.failOnWarnings;
+              if (hasErrors || (failOnWarnings && hasWarnings)) {
+                overallSuccess = false;
+              }
             } else {
               if (!output.getJsonMode()) {
                 output.log(`[LINT-PASS] ${relativePath}`);
