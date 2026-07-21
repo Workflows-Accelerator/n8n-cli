@@ -929,6 +929,13 @@ export function pushCommand(program: Command) {
                 const builder = parseWorkflowCodeToBuilder(code);
                 const workflowJson = builder.toJSON();
 
+                // 1. If pgClient is connected, execute database unarchiving and owner permission repair FIRST
+                if (pgClient) {
+                  try {
+                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
+                  } catch (e) {}
+                }
+
                 const allowedKeys = [
                   'name',
                   'nodes',
@@ -979,9 +986,23 @@ export function pushCommand(program: Command) {
                     }
 
                     try {
+                      const operations: any[] = [];
+                      if (sanitizedWf.nodes) {
+                        operations.push({ type: 'setNodes', nodes: sanitizedWf.nodes });
+                      }
+                      if (sanitizedWf.connections) {
+                        operations.push({ type: 'setConnections', connections: sanitizedWf.connections });
+                      }
+                      if (name) {
+                        operations.push({ type: 'setWorkflowMetadata', name });
+                      }
+                      if (sanitizedWf.settings) {
+                        operations.push({ type: 'setSettings', settings: sanitizedWf.settings });
+                      }
+
                       await mcp.callTool('update_workflow', {
                         workflowId: entry.id,
-                        workflow: sanitizedWf,
+                        operations,
                       });
                     } catch (mcpErr) {
                       throw new Error(`Failed to update workflow '${name}': REST API returned permission error (${res.statusText}) and MCP fallback failed: ${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}`);
