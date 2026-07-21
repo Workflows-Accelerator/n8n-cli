@@ -5,7 +5,7 @@ import pg from 'pg';
 import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { getConnectionInfo, resolveAndConvertTarget } from '../config.js';
 import { withMcp } from '../mcp-client.js';
-import { loadSyncState, syncWorkflowVersionAndHistory } from '../sync-state.js';
+import { loadSyncState, syncWorkflowVersionAndHistory, isTargetScoped } from '../sync-state.js';
 import * as output from '../output.js';
 
 export function publishCommand(program: Command) {
@@ -25,22 +25,47 @@ export function publishCommand(program: Command) {
         let workflowId = target;
         let localFilePath: string | null = null;
 
-        // Try to resolve from sync state if a file path is provided
+        // Try to resolve target from file path, workflow JSON code, or sync state
         if (repoRoot) {
           const workflowsDir = path.join(repoRoot, localDir, 'workflows');
+          const syncState = loadSyncState(repoRoot, localDir);
           const resolvedTarget = resolveAndConvertTarget(target, workflowsDir);
           const fullPath = path.resolve(resolvedTarget);
+
           if (fs.existsSync(fullPath)) {
             localFilePath = fullPath;
-            const relativePath = path.relative(workflowsDir, fullPath).replace(/\\/g, '/');
-            const syncState = loadSyncState(repoRoot, localDir);
-            const entry = syncState.workflows[relativePath];
-            if (entry) {
-              workflowId = entry.id;
-              output.log(`Resolved local file '${relativePath}' to workflow ID: ${workflowId}`);
-            } else {
-              output.warn(`Local file '${relativePath}' is not tracked. Attempting to use path as direct workflow ID.`);
+            try {
+              const code = fs.readFileSync(fullPath, 'utf-8');
+              const builder = parseWorkflowCodeToBuilder(code);
+              const wfJson = builder.toJSON();
+              if (wfJson && wfJson.id) {
+                workflowId = wfJson.id;
+              }
+            } catch (e) {}
+
+            if (!workflowId || workflowId === target) {
+              const relativePath = path.relative(workflowsDir, fullPath).replace(/\\/g, '/');
+              const entry = syncState.workflows[relativePath];
+              if (entry) {
+                workflowId = entry.id;
+              }
             }
+          }
+
+          // If not resolved by direct path, match against syncState using isTargetScoped
+          if (workflowId === target) {
+            const matchedEntry = Object.entries(syncState.workflows).find(([relPath, entry]) =>
+              isTargetScoped(relPath, entry.id, entry.name, target)
+            );
+            if (matchedEntry) {
+              workflowId = matchedEntry[1].id;
+              localFilePath = path.join(workflowsDir, matchedEntry[0]);
+            }
+          }
+
+          if (localFilePath && fs.existsSync(localFilePath)) {
+            const relPath = path.relative(workflowsDir, localFilePath).replace(/\\/g, '/');
+            output.log(`Resolved target '${target}' to workflow ID: ${workflowId} (${relPath})`);
           }
         }
 

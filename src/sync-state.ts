@@ -98,7 +98,7 @@ export async function syncWorkflowVersionAndHistory(
   const connectionsJson = JSON.stringify(workflowJson.connections || {});
 
   try {
-    // 1. Update workflow_entity directly
+    // Determine schema dynamically
     let schema = 'public';
     try {
       const colsRes = await client.query(`
@@ -111,25 +111,8 @@ export async function syncWorkflowVersionAndHistory(
       }
     } catch (e) {}
 
-    try {
-      await client.query(
-        `UPDATE "${schema}"."workflow_entity" 
-         SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "updatedAt" = NOW() 
-         WHERE "id" = $3;`,
-        [nodesJson, connectionsJson, workflowId]
-      );
-    } catch (e) {
-      try {
-        await client.query(
-          `UPDATE "${schema}"."workflow_entity" 
-           SET "nodes" = $1, "connections" = $2, "updatedAt" = NOW() 
-           WHERE "id" = $3;`,
-          [nodesJson, connectionsJson, workflowId]
-        );
-      } catch (err) {}
-    }
-
-    // 2. Invalidate/update workflow_history if table exists
+    // 1. Check/Ensure version snapshot exists in workflow_history
+    let currentVersionId: string | null = null;
     try {
       const histCheck = await client.query(`
         SELECT table_name 
@@ -137,22 +120,92 @@ export async function syncWorkflowVersionAndHistory(
         WHERE table_name = 'workflow_history' LIMIT 1;
       `);
       if (histCheck.rows.length > 0) {
-        try {
-          await client.query(
-            `UPDATE "${schema}"."workflow_history" 
-             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "updatedAt" = NOW() 
-             WHERE "workflowId" = $3;`,
-            [nodesJson, connectionsJson, workflowId]
-          );
-        } catch (e) {
+        const histRows = await client.query(
+          `SELECT "versionId", "id" FROM "${schema}"."workflow_history" WHERE "workflowId" = $1 ORDER BY "createdAt" DESC LIMIT 1;`,
+          [workflowId]
+        );
+        if (histRows.rows.length > 0) {
+          currentVersionId = histRows.rows[0].versionId || histRows.rows[0].id;
           try {
+            await client.query(
+              `UPDATE "${schema}"."workflow_history" 
+               SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "updatedAt" = NOW() 
+               WHERE "workflowId" = $3;`,
+              [nodesJson, connectionsJson, workflowId]
+            );
+          } catch (e) {
             await client.query(
               `UPDATE "${schema}"."workflow_history" 
                SET "nodes" = $1, "connections" = $2, "updatedAt" = NOW() 
                WHERE "workflowId" = $3;`,
               [nodesJson, connectionsJson, workflowId]
             );
-          } catch (e) {}
+          }
+        } else {
+          // Generate new versionId and insert snapshot
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          let newVerId = '';
+          for (let i = 0; i < 16; i++) {
+            newVerId += chars.charAt(Math.floor(Math.random() * chars.length));
+          }
+          currentVersionId = newVerId;
+          try {
+            await client.query(
+              `INSERT INTO "${schema}"."workflow_history" ("versionId", "workflowId", "nodes", "connections", "createdAt", "updatedAt") 
+               VALUES ($1, $2, $3::jsonb, $4::jsonb, NOW(), NOW());`,
+              [newVerId, workflowId, nodesJson, connectionsJson]
+            );
+          } catch (e) {
+            try {
+              await client.query(
+                `INSERT INTO "${schema}"."workflow_history" ("versionId", "workflowId", "nodes", "connections", "createdAt", "updatedAt") 
+                 VALUES ($1, $2, $3, $4, NOW(), NOW());`,
+                [newVerId, workflowId, nodesJson, connectionsJson]
+              );
+            } catch (err) {}
+          }
+        }
+      }
+    } catch (e) {}
+
+    // 2. Update workflow_entity directly and set activeVersionId if column exists
+    try {
+      const wfCols = await client.query(
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'workflow_entity';`
+      );
+      const colNames = wfCols.rows.map((r: any) => r.column_name);
+      
+      if (colNames.includes('activeVersionId') && currentVersionId) {
+        try {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "activeVersionId" = $3, "updatedAt" = NOW() 
+             WHERE "id" = $4;`,
+            [nodesJson, connectionsJson, currentVersionId, workflowId]
+          );
+        } catch (e) {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" 
+             SET "nodes" = $1, "connections" = $2, "activeVersionId" = $3, "updatedAt" = NOW() 
+             WHERE "id" = $4;`,
+            [nodesJson, connectionsJson, currentVersionId, workflowId]
+          );
+        }
+      } else {
+        try {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "updatedAt" = NOW() 
+             WHERE "id" = $3;`,
+            [nodesJson, connectionsJson, workflowId]
+          );
+        } catch (e) {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" 
+             SET "nodes" = $1, "connections" = $2, "updatedAt" = NOW() 
+             WHERE "id" = $3;`,
+            [nodesJson, connectionsJson, workflowId]
+          );
         }
       }
     } catch (e) {}
@@ -181,6 +234,35 @@ export async function syncWorkflowVersionAndHistory(
               [nodesJson, connectionsJson, workflowId]
             );
           } catch (e) {}
+        }
+      }
+    } catch (e) {}
+
+    // 4. Synchronize webhook_entity table for active webhooks if table exists
+    try {
+      const hookCheck = await client.query(`
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_name = 'webhook_entity' LIMIT 1;
+      `);
+      if (hookCheck.rows.length > 0) {
+        const nodes = workflowJson.nodes || [];
+        for (const node of nodes) {
+          const typeLower = (node.type || '').toLowerCase();
+          if (typeLower.includes('webhook') || typeLower.includes('form') || typeLower.includes('trigger')) {
+            const pathVal = node.parameters?.path || node.parameters?.endpoint || node.name;
+            const httpMethod = (node.parameters?.httpMethod || 'GET').toUpperCase();
+            if (pathVal) {
+              try {
+                await client.query(
+                  `UPDATE "${schema}"."webhook_entity" 
+                   SET "webhookPath" = $1, "method" = $2, "node" = $3 
+                   WHERE "workflowId" = $4 AND "node" = $3;`,
+                  [pathVal, httpMethod, node.name, workflowId]
+                );
+              } catch (e) {}
+            }
+          }
         }
       }
     } catch (e) {}

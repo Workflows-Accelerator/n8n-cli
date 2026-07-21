@@ -449,36 +449,68 @@ export function saveFolderCache(repoRoot: string, cache: Record<string, string |
   fs.writeFileSync(cachePath, JSON.stringify(cache, null, 2), 'utf-8');
 }
 
+export async function fetchWithRetry(
+  url: string,
+  options: any = {},
+  maxRetries = 4
+): Promise<Response> {
+  let attempt = 0;
+  let delay = 500;
+
+  while (true) {
+    attempt++;
+    try {
+      const res = await fetch(url, options);
+      if (res.ok) {
+        return res;
+      }
+
+      const isRateLimited = res.status === 429;
+      const isServerError = res.status >= 500 && res.status <= 504;
+
+      if ((isRateLimited || isServerError) && attempt <= maxRetries) {
+        const jitter = Math.floor(Math.random() * 200);
+        const retryDelay = delay + jitter;
+        output.warn(`HTTP ${res.status} (${isRateLimited ? 'Rate Limited / Too many requests' : 'Server Error'}). Retrying attempt ${attempt}/${maxRetries} in ${retryDelay}ms...`);
+        await new Promise(r => setTimeout(r, retryDelay));
+        delay *= 2;
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (attempt <= maxRetries) {
+        const jitter = Math.floor(Math.random() * 200);
+        const retryDelay = delay + jitter;
+        output.warn(`Network error on ${url}. Retrying attempt ${attempt}/${maxRetries} in ${retryDelay}ms...`);
+        await new Promise(r => setTimeout(r, retryDelay));
+        delay *= 2;
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 export async function getWorkflowDetails(
   mcp: any,
   instanceUrl: string,
   apiKey: string,
   workflowId: string,
-  retries = 2
+  retries = 3
 ): Promise<any> {
   if (apiKey && instanceUrl) {
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch(`${instanceUrl}/api/v1/workflows/${workflowId}`, {
-          headers: {
-            'X-N8N-API-KEY': apiKey,
-            'Content-Type': 'application/json',
-          },
-        });
-        if (res.ok) {
-          return await res.json();
-        }
-        if (res.status === 429 && attempt < retries) {
-          output.warn(`Rate limit on REST API details for ${workflowId}. Retrying in 2 seconds...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-      } catch (err) {
-        if (attempt < retries) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          continue;
-        }
+    try {
+      const res = await fetchWithRetry(`${instanceUrl}/api/v1/workflows/${workflowId}`, {
+        headers: {
+          'X-N8N-API-KEY': apiKey,
+          'Content-Type': 'application/json',
+        },
+      }, retries);
+      if (res.ok) {
+        return await res.json();
       }
+    } catch (err) {
+      // Fall through to MCP
     }
   }
 
@@ -552,7 +584,7 @@ export function saveGlobalConfig(config: Partial<GlobalEnvConfig> & Partial<Glob
   } else {
     Object.assign(existing, config);
   }
-  
+
   fs.writeFileSync(p, JSON.stringify(existing, null, 2), 'utf-8');
 }
 
@@ -566,29 +598,13 @@ export async function fetchWorkflowsPaginated(
   let cursor = '';
   while (true) {
     const cleanUrl = instanceUrl.replace(/\/$/, '');
-    const url = `${cleanUrl}/api/v1/workflows?projectId=${projectId}&limit=250${cursor ? `&cursor=${cursor}` : ''}`;
-    let data: any = null;
+    const url = `${cleanUrl}/api/v1/workflows?projectId=${projectId}&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
     
-    for (let attempt = 1; attempt <= retries; attempt++) {
-      try {
-        const res = await fetch(url, { headers });
-        if (res.ok) {
-          data = await res.json();
-          break;
-        }
-        if (res.status === 429 && attempt < retries) {
-          output.warn(`Rate limit listing workflows. Retrying in 2 seconds...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-        if (attempt === retries) {
-          throw new Error(`REST API listing failed with status ${res.status}: ${res.statusText}`);
-        }
-      } catch (err) {
-        if (attempt === retries) throw err;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
+    const res = await fetchWithRetry(url, { headers }, retries);
+    if (!res.ok) {
+      throw new Error(`REST API listing failed with status ${res.status}: ${res.statusText}`);
     }
+    const data = await res.json();
     
     const pageWorkflows = Array.isArray(data) ? data : (data.data || data.workflows || []);
     workflows = workflows.concat(pageWorkflows);

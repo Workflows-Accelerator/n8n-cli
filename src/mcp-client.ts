@@ -104,9 +104,14 @@ export class McpClient {
       throw new Error('MCP Client is not connected.');
     }
     
+    const sanitizedArgs = { ...args };
+    if (typeof sanitizedArgs.limit === 'number' && sanitizedArgs.limit > 200) {
+      sanitizedArgs.limit = 200;
+    }
+
     const result = await this.client.callTool({
       name,
-      arguments: args,
+      arguments: sanitizedArgs,
     });
 
     if (result.isError) {

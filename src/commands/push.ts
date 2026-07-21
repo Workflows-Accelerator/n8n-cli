@@ -571,7 +571,7 @@ export function pushCommand(program: Command) {
           try {
             const list = await mcp.callToolAndGetJson('search_workflows', {
               projectId,
-              limit: 250,
+              limit: 200,
             });
             remoteWorkflows = Array.isArray(list) ? list : (list.data || list.workflows || []);
           } catch (err) {
