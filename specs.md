@@ -163,31 +163,30 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
 
 ### `n8ncli pull`
 ```bash
-n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--dry-run]
+n8ncli pull [target] [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--dry-run]
 ```
-- Pulls all workflows matching the configured `projectId`/`folderId`.
+- Pulls workflows matching configured `projectId`/`folderId` (or specific `[target]` workflow file, ID, or folder path).
 - Converts JSON definition to TypeScript using `@n8n/workflow-sdk`'s `generateWorkflowCode`.
-- Writes `.workflow.ts` locally and saves metadata to `sync-state.json`.
+- Writes `.workflow.ts` locally and saves metadata to `sync-state.json`. Warns before overwriting modified local files.
 - **Empty Folder Retention Safety**: Retains empty directories on disk if they exist on the remote instance.
 - **Hard Sync (`--hard`)**: Deletes untracked and out-of-scope local workflows.
 - Automatically pulls references from multiple environments/projects, local directories, or Git repositories into `n8n/references/` and recreates `index.yaml`.
-  - **Single Remote Reference**: Pulls workflows directly into `n8n/references/` (backward compatible).
-  - **Multi-Source References**: Pulls each reference source into `n8n/references/<sanitized_name>/`.
-  - **Git Cache**: Git repositories are cloned/pulled inside `n8n/references/.repos/` cache.
 - **Dry Run (`--dry-run`)**: Simulates the pull process, listing what files would be created, updated, or deleted without writing to disk or changing sync state.
 
 ### `n8ncli push`
 ```bash
-n8ncli push [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
+n8ncli push [target] [--all] [--no-cache] [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
 ```
-- Evaluates differences between local `.workflow.ts` files, sync state, and remote instance.
+- Evaluates differences between local `.workflow.ts` files, sync state, and remote instance (optionally scoped to `[target]` workflow file, ID, or folder).
+- **`--no-cache`**: Bypasses local sync state content hashes to force clean compilation, linting, layout, and re-pushing of all targeted workflows.
 - **Deletions:** Calls `archive_workflow` for workflows removed locally.
 - **Creations:** Parses local TS code to JSON, runs `create_workflow_from_code` on n8n.
-- **Updates:** Runs `update_workflow` for modified TS files.
+- **Updates:** Runs `update_workflow` for modified TS files, displaying overwrite warnings when updating existing remote snapshots.
+- **Version History Invalidation**: Automatically invalidates and overwrites active version snapshots in PostgreSQL tables (`workflow_history`, `workflow_published_version`, `workflow_entity`) when `dbUrl` is connected so the n8n execution engine immediately uses newly pushed code.
 - **Folder Sync**: If a PostgreSQL `dbUrl` is configured:
   - **Create**: Inserts missing subdirectories into the `folder` table.
-  - **Rename/Move**: Detects moved/renamed directories from workflow renames and updates the database record. A parent folder is only renamed if all active workflows in it are moved. Individual workflows are moved non-destructively by updating `parentFolderId` via REST API, preserving workflow ID and execution logs.
-  - **Prune**: Deletes folders from the database that were previously pulled/synced but are no longer present locally. Only applies to folders within the scope of the configured base project folder.
+  - **Rename/Move**: Detects moved/renamed directories from workflow renames and updates the database record.
+  - **Prune**: Deletes folders from the database that were previously pulled/synced but are no longer present locally.
 
 ### `n8ncli status`
 ```bash
@@ -200,22 +199,20 @@ n8ncli status [--mcp-command <cmd>] [--access-token <token>] [--api-key <key>] [
 n8ncli diff <file> [--semantic]
 ```
 - Retrieves remote version, converts to TS, and prints unified diff (`+` and `-` lines) against the local version.
-- **Semantic Diffing (`--semantic`)**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff, preventing coordinate changes from creating noise in the diff output.
+- **Semantic Diffing (`--semantic`)**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff.
 
-### `n8ncli validate`
+### `n8ncli validate` / `n8ncli lint`
   ```bash
   n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]
   ```
-  - Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schemas validation. Exit code `2` on validation failure or if `--fail-on-warnings` is specified and warnings are detected.
-  - **`--lint`**: Runs standards style checks alongside schema validation.
-  - **`--only-modified`**: Only validates workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
-  - **`--fail-on-warnings`**: Fails with exit code `2` if any warnings are detected.
+  - Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schema validation and static analysis for broken `$('Node Name')` / `$node['Node Name']` node expression references. Exit code `2` on validation failure or if `--fail-on-warnings` is specified and warnings are detected.
+  - **`--lint`**: Enforces naming standards, title casing, node description notes, and static expression references.
 
 ### `n8ncli exec`
 ```bash
 n8ncli exec <workflow-id-or-file> [--mode manual|production] [--input <json>]
 ```
-- Triggers remote execution and prints the Execution ID.
+- Triggers remote execution and prints execution result or formatted node error stack traces on failure.
 
 ### `n8ncli test`
 ```bash
@@ -227,16 +224,28 @@ n8ncli test <workflow-id-or-file> [--pin-data <json-file>]
 ```bash
 n8ncli execution <workflow-id-or-file> <execution-id> [--include-data] [--nodes <names...>] [--node <names...>] [--truncate <n>]
 ```
-- Retrieves status, duration, error messages, and output payload from a run execution. Supports alias `--node` for `--nodes`. If `--include-data` is specified, prints the full JSON input/output data of individual nodes.
+- Retrieves status, duration, error messages, and output payload from a run execution.
+
+### `n8ncli logs`
+```bash
+n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--db-url <url>]
+```
+- Fetches and formats recent execution logs for a workflow from PostgreSQL database or API, displaying execution status, failing node name, error message, and stack trace for failed runs.
+
+### `n8ncli debug`
+```bash
+n8ncli debug <execution-id> [--db-url <url>]
+```
+- Directly inspects an execution ID from PostgreSQL or API, formatting the exact failing node name, line numbers, stack trace, and input/output payload snapshot.
 
 ### `n8ncli publish` / `unpublish`
 ```bash
-n8ncli publish <workflow-id-or-file>
+n8ncli publish <workflow-id-or-file> [--db-url <url>]
 ```
 ```bash
 n8ncli unpublish <workflow-id-or-file>
 ```
-- Activates/deactivates workflows remote execution schedules.
+- Activates/deactivates workflows. When `dbUrl` is connected, `publish` invalidates `workflow_history` active version snapshots in PostgreSQL to ensure production execution immediately picks up changes.
 
 ### `n8ncli nodes`
 - `n8ncli nodes search <query>`: Finds matching core and community nodes.

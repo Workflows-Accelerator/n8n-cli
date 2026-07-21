@@ -25,6 +25,8 @@ import { standardsCommand } from './commands/standards.js';
 import { layoutCommand } from './commands/layout.js';
 import { liveCommand } from './commands/live.js';
 import { datatablesCommand } from './commands/datatables.js';
+import { logsCommand } from './commands/logs.js';
+import { debugCommand } from './commands/debug.js';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -61,6 +63,8 @@ diffCommand(program);
 execCommand(program);
 testCommand(program);
 executionCommand(program);
+logsCommand(program);
+debugCommand(program);
 publishCommand(program);
 unpublishCommand(program);
 nodesCommand(program);

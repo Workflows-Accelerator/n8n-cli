@@ -3,20 +3,20 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, loadUnconfiguredCredsCache, getConnectionInfo, fetchWorkflowsPaginated } from '../config.js';
-import { loadSyncState, calculateHash } from '../sync-state.js';
+import { loadSyncState, calculateHash, isTargetScoped } from '../sync-state.js';
 import * as output from '../output.js';
 
 export function statusCommand(program: Command) {
   program
-    .command('status')
-    .description('Show local changes compared to the last sync state')
+    .command('status [target]')
+    .description('Show local changes compared to the last sync state (optional target workflow file, ID, or folder path)')
     .option('--json', 'output raw JSON format')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .option('--api-key <key>', 'override n8n REST API key')
     .option('--url <url>', 'override n8n instance URL')
     .option('--env <name>', 'override environment name')
-    .action(async (options) => {
+    .action(async (targetArg, options) => {
       try {
         const repoRoot = findRepoRoot();
         if (!repoRoot) {
@@ -48,6 +48,9 @@ export function statusCommand(program: Command) {
         // Check new and modified
         for (const relPath of localRelativePaths) {
           const entry = syncState.workflows[relPath];
+          const isInTargetScope = isTargetScoped(relPath, entry?.id, entry?.name, targetArg);
+          if (!isInTargetScope) continue;
+
           if (!entry) {
             newFiles.push(relPath);
           } else {
@@ -65,7 +68,8 @@ export function statusCommand(program: Command) {
 
         // Check deleted
         for (const [relPath, entry] of Object.entries(syncState.workflows)) {
-          if (!localRelativePaths.includes(relPath)) {
+          const isInTargetScope = isTargetScoped(relPath, entry.id, entry.name, targetArg);
+          if (isInTargetScope && !localRelativePaths.includes(relPath)) {
             deletedFiles.push(relPath);
           }
         }
@@ -88,8 +92,11 @@ export function statusCommand(program: Command) {
               if (rw.isArchived) continue;
               
               const parentFolderId = rw.parentFolderId || rw.folderId || null;
-              const isInScope = !connConfig.folderId || (parentFolderId === connConfig.folderId) || (parentFolderId && inScopeFolderIds.has(parentFolderId));
-              if (!isInScope) continue;
+              const isInFolderScope = !connConfig.folderId || (parentFolderId === connConfig.folderId) || (parentFolderId && inScopeFolderIds.has(parentFolderId));
+              if (!isInFolderScope) continue;
+
+              const isInTargetScope = isTargetScoped(rw.name, rw.id, rw.name, targetArg);
+              if (!isInTargetScope) continue;
 
               if (!activeLocalIds.has(rw.id)) {
                 remoteOnlyWorkflows.push(rw);
@@ -114,6 +121,10 @@ export function statusCommand(program: Command) {
         }
 
         // Output summary
+        if (targetArg && targetArg.trim() !== '') {
+          output.log(`Target filter active: status for target '${targetArg}'`);
+        }
+
         if (newFiles.length === 0 && modifiedFiles.length === 0 && deletedFiles.length === 0 && remoteOnlyWorkflows.length === 0) {
           output.log('Your branch is up to date with the sync state. No changes to push or pull.');
           return;

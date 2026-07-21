@@ -54,10 +54,14 @@ function generateFolderId(): string {
   return result;
 }
 
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, syncWorkflowVersionAndHistory, isTargetScoped } from '../sync-state.js';
+
 export function pushCommand(program: Command) {
   program
-    .command('push')
-    .description('Push local workflow changes to n8n instance')
+    .command('push [target]')
+    .description('Push local workflow changes to n8n instance (optional target workflow file, ID, or folder path)')
+    .option('--all', 'explicitly target all workflows in workspace', false)
+    .option('--no-cache', 'bypass local sync state hashes and force clean compilation and re-push', false)
     .option('--force', 'overwrite remote modifications and bypass conflict checks', false)
     .option('--dry-run', 'simulate changes without executing them', false)
     .option('--mcp-command <cmd>', 'override MCP server start command')
@@ -66,7 +70,7 @@ export function pushCommand(program: Command) {
     .option('--url <url>', 'override n8n instance URL')
     .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
     .option('--env <name>', 'override environment name on run')
-    .action(async (options) => {
+    .action(async (targetArg, options) => {
       let pgClient: any = null;
       let hasConflicts = false;
       try {
@@ -78,6 +82,7 @@ export function pushCommand(program: Command) {
 
         const projectId = config.projectId;
         const folderId = config.folderId;
+        const isTargetActive = !!(targetArg && targetArg.trim() !== '');
 
         output.log(`Pushing local changes for project '${config.projectName}'...`);
 
@@ -89,7 +94,7 @@ export function pushCommand(program: Command) {
 
         // 1. Scan local .workflow.ts files
         const localFiles = glob.sync('**/*.workflow.ts', { cwd: localWorkflowsDir });
-        const localRelativePaths: string[] = [];
+        const allDiscoveredLocalRelativePaths: string[] = [];
         const ignoredRelativePaths = new Set<string>();
 
         const standards = loadStandards(repoRoot);
@@ -123,7 +128,7 @@ export function pushCommand(program: Command) {
           if (isIgnoredFile) {
             ignoredRelativePaths.add(relPath);
           } else {
-            localRelativePaths.push(relPath);
+            allDiscoveredLocalRelativePaths.push(relPath);
           }
         }
 
@@ -132,7 +137,7 @@ export function pushCommand(program: Command) {
         const localCodes: Record<string, string> = {};
         const localIds: Record<string, string> = {};
 
-        // Parse and validate local files
+        // Parse local files to extract IDs and Names first for accurate target matching
         let localValidationFailed = false;
 
         const layoutSettings = loadLayoutSettings(repoRoot);
@@ -143,6 +148,36 @@ export function pushCommand(program: Command) {
         const subnodeSep = layoutSettings.subnodeSep;
         const subnodeHorizontalSep = layoutSettings.subnodeHorizontalSep;
         const alignment = layoutSettings.alignment;
+
+        for (const relPath of allDiscoveredLocalRelativePaths) {
+          const fullPath = path.join(localWorkflowsDir, relPath);
+          let code = fs.readFileSync(fullPath, 'utf-8');
+
+          try {
+            const builder = parseWorkflowCodeToBuilder(code);
+            const workflowJson = builder.toJSON();
+            localNames[relPath] = workflowJson.name || path.basename(relPath, '.workflow.ts');
+            localIds[relPath] = workflowJson.id || '';
+          } catch (e) {
+            localNames[relPath] = path.basename(relPath, '.workflow.ts');
+            localIds[relPath] = '';
+          }
+        }
+
+        // Filter files in target scope
+        const localRelativePaths = allDiscoveredLocalRelativePaths.filter(relPath =>
+          isTargetScoped(relPath, localIds[relPath], localNames[relPath], targetArg)
+        );
+
+        if (isTargetActive) {
+          if (localRelativePaths.length > 0) {
+            output.log(`Target active: pushing ${localRelativePaths.length} in-scope workflow file(s) matching '${targetArg}'. (${allDiscoveredLocalRelativePaths.length - localRelativePaths.length} out-of-scope files untouched)`);
+          } else {
+            output.warn(`No workflow files matched target '${targetArg}'.`);
+            output.log(`Tip: Target can be a workflow file, a folder path, a workflow ID, or a workflow name.`);
+            return;
+          }
+        }
 
         for (const relPath of localRelativePaths) {
           const fullPath = path.join(localWorkflowsDir, relPath);
@@ -165,7 +200,6 @@ export function pushCommand(program: Command) {
           );
 
           if (laidOut) {
-            output.log(`[LAYOUT] Automatically auto-positioned nodes in: ${relPath}`);
             code = updatedCode;
           }
 
@@ -176,8 +210,6 @@ export function pushCommand(program: Command) {
             const builder = parseWorkflowCodeToBuilder(code);
             const validation = builder.validate();
             const workflowJson = builder.toJSON();
-            localNames[relPath] = workflowJson.name || path.basename(relPath, '.workflow.ts');
-            localIds[relPath] = workflowJson.id || '';
 
             if (validation.errors.length > 0) {
               output.error(`Validation failed for local file '${relPath}':`);
@@ -189,7 +221,7 @@ export function pushCommand(program: Command) {
 
             try {
               const entry = syncState.workflows[relPath];
-              const isModified = !entry || entry.contentHash !== localHashes[relPath];
+              const isModified = !entry || entry.contentHash !== localHashes[relPath] || options.noCache;
 
               if (isModified) {
                 const standards = loadStandards(repoRoot);
@@ -226,21 +258,29 @@ export function pushCommand(program: Command) {
         const deletedPaths: string[] = [];
         const unchangedPaths: string[] = [];
 
-        // Find new and modified files
+        // Find new and modified files (in-scope)
         for (const relPath of localRelativePaths) {
           const entry = syncState.workflows[relPath];
           if (!entry) {
             newPaths.push(relPath);
-          } else if (entry.contentHash !== localHashes[relPath]) {
+          } else if (entry.contentHash !== localHashes[relPath] || options.noCache) {
             modifiedPaths.push(relPath);
           } else {
             unchangedPaths.push(relPath);
           }
         }
 
-        // Find deleted files
+        if (options.noCache && unchangedPaths.length > 0) {
+          output.log(`[NO-CACHE] Bypass state hashes: re-pushing ${unchangedPaths.length} unchanged in-scope workflow(s)...`);
+          modifiedPaths.push(...unchangedPaths);
+          unchangedPaths.length = 0;
+        }
+
+
+        // Find deleted files ONLY within target scope!
         for (const [relPath, entry] of Object.entries(syncState.workflows)) {
-          if (!localRelativePaths.includes(relPath) && !ignoredRelativePaths.has(relPath)) {
+          const isInTargetScope = isTargetScoped(relPath, entry.id, entry.name, targetArg);
+          if (isInTargetScope && !allDiscoveredLocalRelativePaths.includes(relPath) && !ignoredRelativePaths.has(relPath)) {
             deletedPaths.push(relPath);
           }
         }
@@ -382,14 +422,14 @@ export function pushCommand(program: Command) {
           }
         }
 
-        // Calculate folder prunes
+        // Calculate folder prunes (only when running full push without target filter)
         const activeFolderIds = new Set<string>();
         for (const localFolder of localFolders) {
           const id = tempFolderPathToId[localFolder.toLowerCase()];
           if (id && id !== 'simulated_new_id') activeFolderIds.add(id);
         }
 
-        const pruneCandidates = remoteFolders.filter((f: any) => 
+        const pruneCandidates = isTargetActive ? [] : remoteFolders.filter((f: any) => 
           f.id !== folderId && 
           folderPaths[f.id] !== undefined && 
           (syncState.folders || []).includes(f.id) && 
@@ -526,6 +566,59 @@ export function pushCommand(program: Command) {
 
         // 10. Connect to MCP and execute actions
         await withMcp(mcpCommand, accessToken, async (mcp) => {
+          // 0. Fetch remote workflows in scope to detect collisions
+          let remoteWorkflows: any[] = [];
+          try {
+            const list = await mcp.callToolAndGetJson('search_workflows', {
+              projectId,
+              limit: 250,
+            });
+            remoteWorkflows = Array.isArray(list) ? list : (list.data || list.workflows || []);
+          } catch (err) {
+            output.warn(`Failed to fetch remote workflows: ${err instanceof Error ? err.message : String(err)}. Skipping duplicate checks.`);
+          }
+
+          // Validate "new" workflows to prevent duplicates
+          for (const relPath of [...newPaths]) {
+            const localId = localIds[relPath];
+            const name = localNames[relPath];
+
+            // Scenario A: The workflow ID already exists on n8n.
+            // (State was just lost/untracked locally. Update it instead of creating a duplicate)
+            const matchById = localId ? remoteWorkflows.find((w: any) => String(w.id) === localId) : undefined;
+            if (matchById) {
+              output.log(`Detected existing remote workflow matching ID ${localId} for '${relPath}'. Re-attaching to sync state.`);
+              newPaths.splice(newPaths.indexOf(relPath), 1);
+              modifiedPaths.push(relPath);
+              
+              // Seed syncState so modified handler updates it
+              syncState.workflows[relPath] = {
+                id: localId,
+                name: name,
+                localPath: relPath,
+                contentHash: '', // Force update check
+                remoteUpdatedAt: matchById.updatedAt || new Date(0).toISOString(),
+                folderId: matchById.parentFolderId || matchById.folderId || undefined,
+              };
+              continue;
+            }
+
+            // Scenario B: A remote workflow has the same name but a different ID.
+            // (This is a collision that will result in a duplicate workflow)
+            const matchByName = remoteWorkflows.find((w: any) => w.name === name && !w.isArchived);
+            if (matchByName) {
+              const remoteId = matchByName.id;
+              if (!options.force) {
+                throw new Error(
+                  `Conflict: A workflow named "${name}" already exists on remote with ID "${remoteId}", but local code has ID "${localId || '(none)'}". ` +
+                  `Pushing would create a duplicate. Please align the ID in your local file to match the remote workflow, or use --force to override.`
+                );
+              } else {
+                output.warn(`Warning: A workflow named "${name}" already exists on remote with ID "${remoteId}". --force is enabled, creating a duplicate.`);
+              }
+            }
+          }
+
           // A. Handle Deleted Workflows
           for (const relPath of deletedPaths) {
             const entry = syncState.workflows[relPath];
@@ -863,6 +956,13 @@ export function pushCommand(program: Command) {
                   throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
                 }
 
+                // If pgClient is connected, sync/invalidate workflow history and published active version
+                if (pgClient) {
+                  try {
+                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson);
+                  } catch (e) {}
+                }
+
                 // If dbUrl and availableInMCP is true, set it in DB
                 if (dbUrl && workflowJson.settings?.availableInMCP) {
                   try {
@@ -949,7 +1049,9 @@ export function pushCommand(program: Command) {
 
           // Save final sync state
           syncState.lastSync = new Date().toISOString();
-          syncState.folders = Array.from(activeFolderIds);
+          if (!isTargetActive) {
+            syncState.folders = Array.from(activeFolderIds);
+          }
           saveSyncState(repoRoot, syncState, localDir);
         });
 

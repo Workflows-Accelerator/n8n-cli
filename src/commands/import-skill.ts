@@ -167,18 +167,20 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
 
 ### Syncing
-- \`n8ncli pull [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata, or simulate the pull without writing to disk.
-- \`n8ncli push [--force] [--dry-run]\`: Deploy local modifications and folder structures.
+- \`n8ncli pull [target] [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata (specify target workflow file, ID, or folder path), or simulate the pull without writing to disk.
+- \`n8ncli push [target] [--all] [--no-cache] [--force] [--dry-run]\`: Deploy local modifications and folder structures (specify target workflow file, ID, or folder path; use \`--no-cache\` to force clean builds across workflows).
 - \`n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--foreground]\`: Start, stop, or inspect the live synchronization background daemon.
 - \`n8ncli status\`: List modified, untracked, deleted, or remote-only files.
 - \`n8ncli diff <file> [--semantic]\`: Show line diff of a local file against remote (use \`--semantic\` to ignore node coordinate/position differences).
 
-### Verification & Testing
-- \`n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]\`: Validate syntax, schema, and node versions (and optionally standards style checks, optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
+### Verification, Debugging & Testing
+- \`n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]\`: Validate syntax, schema, node versions, expression node references, and style standards. Exit code 2 is triggered on warnings if --fail-on-warnings is specified.
 - \`n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]\`: Execute workflow.
 - \`n8ncli test <file-or-id> [--pin-data <file>]\`: Test run with mock pin data.
 - \`n8ncli execution <file-or-id> <execution-id> [--include-data] [--node <name>]\`: Inspect execution details. Specify --include-data to output raw JSON node input/output payload.
-- \`n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]\`: Auto-position nodes in n8n workflows using Dagre (resolving parameters from command line, n8n-layout.json, and n8n-cli.json).
+- \`n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--db-url <url>]\`: Fetch and format recent execution logs and failure stack traces for a workflow.
+- \`n8ncli debug <executionId> [--db-url <url>]\`: Directly inspect and format error stack trace, failing node parameters, and payload data for a specific execution ID.
+- \`n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]\`: Auto-position nodes in n8n workflows using Dagre.
 
 ### Database Datatables
 - \`n8ncli datatables\`: Inspect and update n8n database tracking datatables.

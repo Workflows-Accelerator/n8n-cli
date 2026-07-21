@@ -711,10 +711,7 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
       branchPositions.set(nodeName, [x, y]);
     }
 
-    console.log("[SWAP ENGINE] Raw Dagre positions in branchPositions:");
-    for (const [nodeName, pos] of branchPositions.entries()) {
-      console.log(`  - ${nodeName.padEnd(45)}: [${pos[0]}, ${pos[1]}]`);
-    }
+    // Raw Dagre positions ready for layout adjustment
 
     const getDownstreamNodes = (startNode: string, branchNodes: string[], parent: string): Set<string> => {
       const visited = new Set<string>();
@@ -778,7 +775,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
         }
 
         if (targetsInfo.length > 1) {
-          console.log(`[ALIGN ENGINE] "${nodeName}": Targets before alignment:`, JSON.stringify(targetsInfo));
           
           // Check if this is a split-merge bypass structure
           // A bypass structure exists if one target connects to another target in targetsInfo.
@@ -822,7 +818,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
                 sortedY.push(splitY + (idx - bypassTargetIdx) * offset);
               }
             }
-            console.log(`[ALIGN ENGINE] Bypass detected for "${nodeName}". Manual Y mapping:`, sortedY);
             // Since we manually mapped sortedY to ports, we must ensure targetsInfo is sorted by index
             targetsInfo.sort((a, b) => a.index - b.index);
           } else {
@@ -854,7 +849,7 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
               }
             } else {
               let sumTargetCenterY = 0;
-              for (let idx = 0; idx < targetsInfo.length; idx++) {
+              for (let idx = 0; idx < tempSortedY.length; idx++) {
                 const targetNode = targetsInfo[idx].node;
                 const targetInfo = nodeInfoMap.get(targetNode);
                 const targetHeight = targetInfo?.height || 96;
@@ -879,7 +874,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             const t = targetsInfo[i];
             const newY = sortedY[i];
             const diff = newY - t.y;
-            console.log(`[ALIGN ENGINE] Target ${t.node} (idx ${t.index}): oldY = ${t.y}, newY = ${newY}, diff = ${diff}`);
             if (diff !== 0) {
               const subtree = targetSubtrees[i];
               
@@ -1132,9 +1126,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             if (targetPos && targetInfo && currentInfo) {
               const targetCenterY = targetPos[1] + targetInfo.height / 2;
               const newY = targetCenterY - currentInfo.height / 2;
-              if (nodeName === 'Lock Thread' || nodeName === 'Get Thread') {
-                console.log(`[BACKWARD LOG] ${nodeName}: target = ${targetName}, isBypassSideNode = ${isBypassSideNode}, targetCenterY = ${targetCenterY}, newY = ${newY}`);
-              }
               const pos = branchPositions.get(nodeName);
               if (pos) {
                 pos[1] = newY;
@@ -1472,7 +1463,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
     while (collisionDetected && collisionIterations < maxCollisionIterations) {
       collisionDetected = false;
       collisionIterations++;
-      console.log(`[COLLISION] Iteration ${collisionIterations}`);
 
       const sortedNodes = [...branch]
         .filter(name => !childToParent.has(name) && resolvedPositions.has(name))
@@ -1503,7 +1493,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
             if (overlapY) {
               const diff = (posA[1] + infoA.height + minGap) - posB[1];
               if (diff > 0) {
-                console.log(`[COLLISION] OVERLAP: "${nodeA}" (${posA[1]}..${posA[1]+infoA.height}) collides with "${nodeB}" (${posB[1]}..${posB[1]+infoB.height}), shifting "${nodeB}" by ${diff}`);
                 // Shift Node B and all its downstream successors + single-output predecessors
                 shiftNodeSubtreeAndPredecessors(
                   nodeB,
@@ -1577,7 +1566,6 @@ export async function layoutWorkflow(workflowJson: any, options: LayoutOptions =
               if (posCurr[1] < requiredY) {
                 const diff = requiredY - posCurr[1];
                 if (diff > 0) {
-                  console.log(`[COLLISION] PORT ORDER: "${splitNode}": target "${prevTarget}" (index ${idx-1}, Y=${posPrev[1]}) forces target "${currTarget}" (index ${idx}, Y=${posCurr[1]}) below Y=${requiredY}, shifting "${currTarget}" by ${diff}`);
                   // Shift Node B and all its downstream successors + single-output predecessors
                   shiftNodeSubtreeAndPredecessors(
                     currTarget,
@@ -1929,22 +1917,22 @@ export async function autoLayoutIfChanged(
 
     const builder = parseWorkflowCodeToBuilder(code);
     const workflowJson = builder.toJSON();
+    const localNodes = workflowJson.nodes || [];
+    const allHavePositions = localNodes.length > 0 && localNodes.every((n: any) => Array.isArray(n.position) && n.position.length === 2 && (n.position[0] !== 0 || n.position[1] !== 0));
 
     let shouldLayout = false;
     if (!headCode) {
-      shouldLayout = true;
+      shouldLayout = !allHavePositions;
     } else {
       const headBuilder = parseWorkflowCodeToBuilder(headCode);
       const headJson = headBuilder.toJSON();
-
-      const localNodes = workflowJson.nodes || [];
       const headNodes = headJson.nodes || [];
 
       if (localNodes.length !== headNodes.length) {
         shouldLayout = true;
       } else {
-        const localNodeKeys = localNodes.map(n => `${n.name}::${n.type}`).sort().join('|');
-        const headNodeKeys = headNodes.map(n => `${n.name}::${n.type}`).sort().join('|');
+        const localNodeKeys = localNodes.map((n: any) => `${n.name}::${n.type}`).sort().join('|');
+        const headNodeKeys = headNodes.map((n: any) => `${n.name}::${n.type}`).sort().join('|');
         if (localNodeKeys !== headNodeKeys) {
           shouldLayout = true;
         } else {
@@ -1960,8 +1948,10 @@ export async function autoLayoutIfChanged(
     if (shouldLayout) {
       const updatedJson = await layoutWorkflow(workflowJson, options);
       const updatedCode = generateWorkflowCode(updatedJson);
-      fs.writeFileSync(fullPath, updatedCode, 'utf-8');
-      return { code: updatedCode, laidOut: true };
+      if (updatedCode !== code) {
+        fs.writeFileSync(fullPath, updatedCode, 'utf-8');
+        return { code: updatedCode, laidOut: true };
+      }
     }
   } catch (err) {
     // Fail silently, do not disrupt main flow

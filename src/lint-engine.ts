@@ -953,6 +953,51 @@ export function validateWorkflowAgainstStandards(
     }
   }
   
+  // 6. Expression Node Reference validation ($('Node Name'), $node['Node Name'], $items('Node Name'))
+  const validNodeNames = new Set<string>(nodes.map((n: any) => n.name).filter(Boolean));
+  const exprPatternMcp = /\$\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+  const exprPatternNode = /\$node\[\s*['"`]([^'"`]+)['"`]\s*\]/g;
+  const exprPatternItems = /\$items\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+  const exprPatternItem = /\$item\(\s*['"`]([^'"`]+)['"`]\s*\)/g;
+
+  function checkExpressionReferences(strVal: string, sourceNodeName: string) {
+    if (!strVal || typeof strVal !== 'string') return;
+
+    const patterns = [exprPatternMcp, exprPatternNode, exprPatternItems, exprPatternItem];
+    for (const pattern of patterns) {
+      pattern.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(strVal)) !== null) {
+        const refName = match[1];
+        if (refName && !validNodeNames.has(refName)) {
+          warnings.push(
+            `Node "${sourceNodeName}" references missing node "${refName}" in expression (${match[0]}), but no node named "${refName}" exists in the workflow DAG.`
+          );
+        }
+      }
+    }
+  }
+
+  function recurseParams(obj: any, sourceNodeName: string) {
+    if (!obj || typeof obj !== 'object') return;
+    for (const key of Object.keys(obj)) {
+      const val = obj[key];
+      if (typeof val === 'string') {
+        checkExpressionReferences(val, sourceNodeName);
+      } else if (typeof val === 'object') {
+        recurseParams(val, sourceNodeName);
+      }
+    }
+  }
+
+  for (const n of nodes) {
+    const sName = n.name || 'Unknown';
+    if (n.parameters) recurseParams(n.parameters, sName);
+    if (n.type === 'n8n-nodes-base.code' && n.parameters?.jsCode) {
+      checkExpressionReferences(String(n.parameters.jsCode), sName);
+    }
+  }
+  
   return { errors, warnings };
 }
 

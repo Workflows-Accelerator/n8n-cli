@@ -4,7 +4,7 @@ import path from 'path';
 import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials, fetchWorkflowsPaginated } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, isTargetScoped } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { stripPositions } from './diff.js';
@@ -233,8 +233,8 @@ async function restoreMcpSettings(
 
 export function pullCommand(program: Command) {
   program
-    .command('pull')
-    .description('Pull workflows from n8n instance and convert them to TypeScript SDK files')
+    .command('pull [target]')
+    .description('Pull workflows from n8n instance and convert them to TypeScript SDK files (optional target workflow file, ID, or folder path)')
     .option('--force', 'overwrite local modifications without confirmation', false)
     .option('--hard', 'delete untracked and out-of-scope local workflows to mirror remote state exactly', false)
     .option('--skip-references', 'skip pulling reference workflows', false)
@@ -245,7 +245,7 @@ export function pullCommand(program: Command) {
     .option('--url <url>', 'override n8n instance URL')
     .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
     .option('--dry-run', 'simulate pulling remote workflows without writing to disk', false)
-    .action(async (options) => {
+    .action(async (targetArg, options) => {
       let mainMcpCache: Record<string, boolean> = {};
       let projectId = '';
       let instanceUrl = '';
@@ -424,7 +424,24 @@ export function pullCommand(program: Command) {
               }
             }
 
-            output.log(`Found ${targetWorkflows.length} workflows in scope.`);
+            // Target filtering if a target argument was specified
+            const isTargetActive = !!(targetArg && targetArg.trim() !== '');
+            if (isTargetActive) {
+              const filtered = targetWorkflows.filter(({ w, details }) =>
+                isTargetScoped(details.name || w.name, w.id, details.name || w.name, targetArg)
+              );
+
+              if (filtered.length > 0) {
+                targetWorkflows.length = 0;
+                targetWorkflows.push(...filtered);
+                output.log(`Target filter active: pulling ${targetWorkflows.length} workflow(s) matching '${targetArg}'.`);
+              } else {
+                output.warn(`No remote workflows matched target '${targetArg}'.`);
+                return;
+              }
+            } else {
+              output.log(`Found ${targetWorkflows.length} workflows in scope.`);
+            }
 
             const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
@@ -571,9 +588,10 @@ export function pullCommand(program: Command) {
               }
             }
 
-            // Handle local files that no longer exist on remote or are out of scope
+            // Handle local files that no longer exist on remote or are out of scope (within target scope)
             for (const [relPath, entry] of Object.entries(syncState.workflows)) {
-              if (!activeWorkflowIds.has(entry.id)) {
+              const isInTargetScope = isTargetScoped(relPath, entry.id, entry.name, targetArg);
+              if (isInTargetScope && !activeWorkflowIds.has(entry.id)) {
                 const fullPath = path.join(repoRoot!, localDir, 'workflows', relPath);
                 if (fs.existsSync(fullPath)) {
                   if (!options.dryRun) {
@@ -604,7 +622,7 @@ export function pullCommand(program: Command) {
               }
             }
 
-            // If hard sync is requested, scan for and delete any untracked workflow files on disk
+            // If hard sync is requested, scan for and delete any untracked workflow files on disk (within target scope)
             if (options.hard) {
               const localWorkflowsDir = path.join(repoRoot!, localDir, 'workflows');
               if (fs.existsSync(localWorkflowsDir)) {
@@ -626,10 +644,13 @@ export function pullCommand(program: Command) {
                 const files = getWorkflowFiles(localWorkflowsDir);
                 for (const fullPath of files) {
                   try {
+                    const rel = path.relative(localWorkflowsDir, fullPath).replace(/\\/g, '/');
                     const content = fs.readFileSync(fullPath, 'utf-8');
                     const match = content.match(/workflow\(\s*['"]([^'"]+)['"]/);
                     const id = match ? match[1] : null;
-                    if (!id || !activeWorkflowIds.has(id)) {
+                    const isInTargetScope = isTargetScoped(rel, id || undefined, undefined, targetArg);
+
+                    if (isInTargetScope && (!id || !activeWorkflowIds.has(id))) {
                       if (!options.dryRun) {
                         fs.unlinkSync(fullPath);
                         const entry = Object.values(syncState.workflows).find(e => e.id === id);
@@ -637,7 +658,6 @@ export function pullCommand(program: Command) {
                           deleteWorkflowCache(repoRoot!, entry.id, localDir);
                         }
                       }
-                      const rel = path.relative(localWorkflowsDir, fullPath);
                       output.log(`  [HARD CLEANUP] Deleted local file: ${rel}${options.dryRun ? ' (dry-run)' : ''}`);
 
                       // Clean up empty parent directories
@@ -665,7 +685,9 @@ export function pullCommand(program: Command) {
             // Save sync state
             if (!options.dryRun) {
               syncState.lastSync = new Date().toISOString();
-              syncState.folders = Object.keys(folderPaths);
+              if (!isTargetActive) {
+                syncState.folders = Object.keys(folderPaths);
+              }
               saveSyncState(repoRoot!, syncState, localDir);
             } else {
               output.log(`(dry-run) Would save sync state with lastSync and folders updated.`);
