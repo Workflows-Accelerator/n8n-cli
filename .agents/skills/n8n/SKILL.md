@@ -1,6 +1,6 @@
 ---
 name: n8ncli
-version: 1.2.30
+version: 1.2.31
 description: |
   Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
   Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.

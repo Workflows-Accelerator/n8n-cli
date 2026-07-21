@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import pg from 'pg';
-import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials, loadLayoutSettings } from '../config.js';
+import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials, loadLayoutSettings, fetchWithRetry } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
 import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
 import { showConflictDiff, stripPositions } from './diff.js';
@@ -578,6 +578,8 @@ export function pushCommand(program: Command) {
             output.warn(`Failed to fetch remote workflows: ${err instanceof Error ? err.message : String(err)}. Skipping duplicate checks.`);
           }
 
+          const archivedWorkflowsToUnarchive = new Set<string>();
+
           // Validate "new" workflows to prevent duplicates
           for (const relPath of [...newPaths]) {
             const localId = localIds[relPath];
@@ -587,6 +589,9 @@ export function pushCommand(program: Command) {
             // (State was just lost/untracked locally. Update it instead of creating a duplicate)
             const matchById = localId ? remoteWorkflows.find((w: any) => String(w.id) === localId) : undefined;
             if (matchById) {
+              if (matchById.isArchived) {
+                archivedWorkflowsToUnarchive.add(matchById.id);
+              }
               output.log(`Detected existing remote workflow matching ID ${localId} for '${relPath}'. Re-attaching to sync state.`);
               newPaths.splice(newPaths.indexOf(relPath), 1);
               modifiedPaths.push(relPath);
@@ -892,6 +897,34 @@ export function pushCommand(program: Command) {
               }
 
               const code = localCodes[relPath];
+              
+              // If workflow is archived on remote, unarchive/restore it first
+              const remoteMatch = remoteWorkflows.find((w: any) => String(w.id) === entry.id);
+              const isArchivedOnRemote = (remoteMatch && remoteMatch.isArchived) || archivedWorkflowsToUnarchive.has(entry.id);
+
+              if (isArchivedOnRemote) {
+                output.log(`  [UNARCHIVED] Restoring archived workflow '${name}' (ID: ${entry.id})...`);
+                try {
+                  await mcp.callTool('unarchive_workflow', { workflowId: entry.id, id: entry.id });
+                } catch (e) {
+                  try {
+                    await mcp.callTool('unarchive', { workflowId: entry.id, id: entry.id });
+                  } catch (e2) {}
+                }
+                if (apiKey && instanceUrl) {
+                  try {
+                    const cleanUrl = instanceUrl.replace(/\/$/, '');
+                    await fetchWithRetry(`${cleanUrl}/api/v1/workflows/${entry.id}/unarchive`, {
+                      method: 'POST',
+                      headers: {
+                        'X-N8N-API-KEY': apiKey,
+                        'Content-Type': 'application/json',
+                      },
+                    }, 2);
+                  } catch (e) {}
+                }
+              }
+
               if (apiKey && instanceUrl) {
                 const builder = parseWorkflowCodeToBuilder(code);
                 const workflowJson = builder.toJSON();

@@ -168,25 +168,28 @@ export async function syncWorkflowVersionAndHistory(
       }
     } catch (e) {}
 
-    // 2. Update workflow_entity directly and set activeVersionId if column exists
+    // 2. Update workflow_entity directly and set activeVersionId/unarchive if columns exist
     try {
       const wfCols = await client.query(
         `SELECT column_name FROM information_schema.columns WHERE table_name = 'workflow_entity';`
       );
       const colNames = wfCols.rows.map((r: any) => r.column_name);
       
+      const hasArchivedCol = colNames.includes('isArchived');
+      const archiveSetClause = hasArchivedCol ? `, "isArchived" = false, "archivedAt" = NULL` : '';
+
       if (colNames.includes('activeVersionId') && currentVersionId) {
         try {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "activeVersionId" = $3, "updatedAt" = NOW() 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "activeVersionId" = $3${archiveSetClause}, "updatedAt" = NOW() 
              WHERE "id" = $4;`,
             [nodesJson, connectionsJson, currentVersionId, workflowId]
           );
         } catch (e) {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1, "connections" = $2, "activeVersionId" = $3, "updatedAt" = NOW() 
+             SET "nodes" = $1, "connections" = $2, "activeVersionId" = $3${archiveSetClause}, "updatedAt" = NOW() 
              WHERE "id" = $4;`,
             [nodesJson, connectionsJson, currentVersionId, workflowId]
           );
@@ -195,14 +198,14 @@ export async function syncWorkflowVersionAndHistory(
         try {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "updatedAt" = NOW() 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb${archiveSetClause}, "updatedAt" = NOW() 
              WHERE "id" = $3;`,
             [nodesJson, connectionsJson, workflowId]
           );
         } catch (e) {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1, "connections" = $2, "updatedAt" = NOW() 
+             SET "nodes" = $1, "connections" = $2${archiveSetClause}, "updatedAt" = NOW() 
              WHERE "id" = $3;`,
             [nodesJson, connectionsJson, workflowId]
           );
