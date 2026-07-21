@@ -897,185 +897,166 @@ export function pushCommand(program: Command) {
               }
 
               const code = localCodes[relPath];
-              
-              // If workflow is archived on remote, unarchive/restore it first
-              const remoteMatch = remoteWorkflows.find((w: any) => String(w.id) === entry.id);
-              const isArchivedOnRemote = (remoteMatch && remoteMatch.isArchived) || archivedWorkflowsToUnarchive.has(entry.id);
+              const builder = parseWorkflowCodeToBuilder(code);
+              const workflowJson = builder.toJSON();
 
-              if (isArchivedOnRemote) {
-                output.log(`  [UNARCHIVED] Restoring archived workflow '${name}' (ID: ${entry.id})...`);
-                try {
-                  await mcp.callTool('unarchive_workflow', { workflowId: entry.id, id: entry.id });
-                } catch (e) {
-                  try {
-                    await mcp.callTool('unarchive', { workflowId: entry.id, id: entry.id });
-                  } catch (e2) {}
-                }
-                if (apiKey && instanceUrl) {
-                  try {
-                    const cleanUrl = instanceUrl.replace(/\/$/, '');
-                    await fetchWithRetry(`${cleanUrl}/api/v1/workflows/${entry.id}/unarchive`, {
-                      method: 'POST',
-                      headers: {
-                        'X-N8N-API-KEY': apiKey,
-                        'Content-Type': 'application/json',
-                      },
-                    }, 2);
-                  } catch (e) {}
+              const allowedKeys = [
+                'name',
+                'nodes',
+                'connections',
+                'settings',
+                'staticData',
+                'meta',
+                'pinData'
+              ];
+              const sanitizedWf: Record<string, any> = {};
+              for (const key of allowedKeys) {
+                if (workflowJson[key] !== undefined) {
+                  sanitizedWf[key] = workflowJson[key];
                 }
               }
+              
+              if (sanitizedWf.settings) {
+                sanitizedWf.settings = { ...sanitizedWf.settings };
+                delete sanitizedWf.settings.availableInMCP;
+                delete sanitizedWf.settings.binaryMode;
+                delete sanitizedWf.settings.description;
+              }
 
+              let updatedSuccessfully = false;
+
+              // Attempt 1: Direct REST API PUT
               if (apiKey && instanceUrl) {
-                const builder = parseWorkflowCodeToBuilder(code);
-                const workflowJson = builder.toJSON();
-
-                // 1. If pgClient is connected, execute database unarchiving and owner permission repair FIRST
-                if (pgClient) {
-                  try {
-                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
-                  } catch (e) {}
-                }
-
-                const allowedKeys = [
-                  'name',
-                  'nodes',
-                  'connections',
-                  'settings',
-                  'staticData',
-                  'meta',
-                  'pinData'
-                ];
-                const sanitizedWf: Record<string, any> = {};
-                for (const key of allowedKeys) {
-                  if (workflowJson[key] !== undefined) {
-                    sanitizedWf[key] = workflowJson[key];
+                try {
+                  const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+                  const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${entry.id}`, {
+                    method: 'PUT',
+                    headers: {
+                      'X-N8N-API-KEY': apiKey,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(sanitizedWf),
+                  });
+                  if (res.ok) {
+                    updatedSuccessfully = true;
                   }
-                }
-                
-                // Remove availableInMCP from settings as n8n REST API rejects it
-                if (sanitizedWf.settings) {
-                  sanitizedWf.settings = { ...sanitizedWf.settings };
-                  delete sanitizedWf.settings.availableInMCP;
-                  delete sanitizedWf.settings.binaryMode;
-                  delete sanitizedWf.settings.description;
-                }
+                } catch (e) {}
+              }
 
-                const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
-                const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${entry.id}`, {
-                  method: 'PUT',
-                  headers: {
-                    'X-N8N-API-KEY': apiKey,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(sanitizedWf),
-                });
-                if (!res.ok) {
-                  const errorText = await res.text();
-                  const isPermissionError = errorText.toLowerCase().includes('permission') || 
-                                            errorText.toLowerCase().includes('share') || 
-                                            errorText.toLowerCase().includes('not found') || 
-                                            res.status === 404 || res.status === 403;
+              // Attempt 2: Direct PostgreSQL Database Update (Ultimate Fallback for REST permission / 404 / archived errors)
+              if (!updatedSuccessfully) {
+                let dbClientToUse = pgClient;
+                let createdTempDbClient = false;
 
-                  if (isPermissionError) {
-                    output.log(`  [PERMISSION REPAIR] Seeding owner permissions and restoring workflow '${name}' (ID: ${entry.id})...`);
-                    
-                    if (pgClient) {
-                      try {
-                        await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
-                      } catch (e) {}
-                    }
-
-                    try {
-                      const operations: any[] = [];
-                      if (sanitizedWf.nodes) {
-                        operations.push({ type: 'setNodes', nodes: sanitizedWf.nodes });
-                      }
-                      if (sanitizedWf.connections) {
-                        operations.push({ type: 'setConnections', connections: sanitizedWf.connections });
-                      }
-                      if (name) {
-                        operations.push({ type: 'setWorkflowMetadata', name });
-                      }
-                      if (sanitizedWf.settings) {
-                        operations.push({ type: 'setSettings', settings: sanitizedWf.settings });
-                      }
-
-                      await mcp.callTool('update_workflow', {
-                        workflowId: entry.id,
-                        operations,
-                      });
-                    } catch (mcpErr) {
-                      throw new Error(`Failed to update workflow '${name}': REST API returned permission error (${res.statusText}) and MCP fallback failed: ${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}`);
-                    }
-                  } else {
-                    try {
-                      const json = JSON.parse(errorText);
-                      if (json.message && json.message.toLowerCase().includes('additional properties')) {
-                        let offendingField = '';
-                        if (Array.isArray(json.validation)) {
-                          const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
-                          if (addProp && addProp.params && addProp.params.additionalProperty) {
-                            offendingField = addProp.params.additionalProperty;
-                          }
-                        }
-                        if (!offendingField && Array.isArray(json.errors)) {
-                          const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
-                          if (addProp && addProp.params && addProp.params.additionalProperty) {
-                            offendingField = addProp.params.additionalProperty;
-                          }
-                        }
-                        if (offendingField) {
-                          output.warn(`Warning: Skipping push for workflow '${name}' (ID: ${entry.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
-                          continue;
-                        }
-                      }
-                    } catch (e) {}
-                    throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
-                  }
-                }
-
-                // If pgClient is connected, sync/invalidate workflow history and published active version
-                if (pgClient) {
-                  try {
-                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
-                  } catch (e) {}
-                }
-
-                // If dbUrl and availableInMCP is true, set it in DB
-                if (dbUrl && workflowJson.settings?.availableInMCP) {
+                if (!dbClientToUse && dbUrl) {
                   try {
                     const pgModule = pg as any;
                     const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
-                    const client = new ClientClass({
+                    dbClientToUse = new ClientClass({
                       connectionString: dbUrl,
                       ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
                     });
-                    await client.connect();
-                    try {
-                      let schema = 'public';
-                      try {
-                        const colsRes = await client.query(`
-                          SELECT table_schema
-                          FROM information_schema.columns 
-                          WHERE table_name = 'workflow_entity' LIMIT 1;
-                        `);
-                        if (colsRes.rows.length > 0) {
-                          schema = colsRes.rows[0].table_schema;
-                        }
-                      } catch (schemaErr) {
-                        // fallback to public
-                      }
-                      await client.query(
-                        `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
-                        [entry.id]
-                      );
-                    } finally {
-                      await client.end();
-                    }
-                  } catch (e) {}
+                    await dbClientToUse.connect();
+                    createdTempDbClient = true;
+                  } catch (e) {
+                    dbClientToUse = null;
+                  }
                 }
-              } else {
-                throw new Error('REST API key or instance URL is missing. Cannot perform workflow update.');
+
+                if (dbClientToUse) {
+                  try {
+                    await syncWorkflowVersionAndHistory(dbClientToUse, entry.id, workflowJson, projectId);
+                    updatedSuccessfully = true;
+
+                    // After DB update, sync runtime memory via API
+                    if (apiKey && instanceUrl) {
+                      const cleanUrl = instanceUrl.replace(/\/$/, '');
+                      try {
+                        await fetchWithRetry(`${cleanUrl}/api/v1/workflows/${entry.id}/unarchive`, {
+                          method: 'POST',
+                          headers: {
+                            'X-N8N-API-KEY': apiKey,
+                            'Content-Type': 'application/json',
+                          },
+                        }, 2);
+                      } catch (e) {}
+                      try {
+                        await fetch(`${cleanUrl}/api/v1/workflows/${entry.id}`, {
+                          method: 'PUT',
+                          headers: {
+                            'X-N8N-API-KEY': apiKey,
+                            'Content-Type': 'application/json',
+                          },
+                          body: JSON.stringify(sanitizedWf),
+                        });
+                      } catch (e) {}
+                    }
+                  } catch (e) {} finally {
+                    if (createdTempDbClient && dbClientToUse) {
+                      try { await dbClientToUse.end(); } catch (e) {}
+                    }
+                  }
+                }
+              }
+
+              // Attempt 3: MCP Tool Fallback
+              if (!updatedSuccessfully) {
+                try {
+                  await mcp.callTool('unarchive_workflow', { workflowId: entry.id, id: entry.id });
+                } catch (e) {}
+
+                try {
+                  await mcp.callTool('create_workflow_from_code', { code });
+                  updatedSuccessfully = true;
+                } catch (e) {
+                  try {
+                    await mcp.callTool('update_workflow', {
+                      workflowId: entry.id,
+                      operations: [
+                        { type: 'setWorkflowMetadata', name }
+                      ]
+                    });
+                    updatedSuccessfully = true;
+                  } catch (e2) {}
+                }
+              }
+
+              if (!updatedSuccessfully) {
+                throw new Error(`Failed to update workflow '${name}' (ID: ${entry.id}). REST API, PostgreSQL database, and MCP tools were unable to write changes.`);
+              }
+
+              // If dbUrl and availableInMCP is true, set it in DB
+              if (dbUrl && workflowJson.settings?.availableInMCP) {
+                try {
+                  const pgModule = pg as any;
+                  const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+                  const client = new ClientClass({
+                    connectionString: dbUrl,
+                    ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+                  });
+                  await client.connect();
+                  try {
+                    let schema = 'public';
+                    try {
+                      const colsRes = await client.query(`
+                        SELECT table_schema
+                        FROM information_schema.columns 
+                        WHERE table_name = 'workflow_entity' LIMIT 1;
+                      `);
+                      if (colsRes.rows.length > 0) {
+                        schema = colsRes.rows[0].table_schema;
+                      }
+                    } catch (schemaErr) {
+                      // fallback to public
+                    }
+                    await client.query(
+                      `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
+                      [entry.id]
+                    );
+                  } finally {
+                    await client.end();
+                  }
+                } catch (e) {}
               }
 
               let finalRelPath = relPath;

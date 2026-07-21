@@ -218,37 +218,42 @@ export async function syncWorkflowVersionAndHistory(
       
       const hasArchivedCol = colNames.includes('isArchived');
       const archiveSetClause = hasArchivedCol ? `, "isArchived" = false, "archivedAt" = NULL` : '';
+      const nameClause = workflowJson.name ? `, "name" = $${colNames.includes('activeVersionId') && currentVersionId ? 5 : 4}` : '';
 
       if (colNames.includes('activeVersionId') && currentVersionId) {
+        const queryParams = [nodesJson, connectionsJson, currentVersionId, workflowId];
+        if (workflowJson.name) queryParams.push(workflowJson.name);
         try {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "activeVersionId" = $3${archiveSetClause}, "updatedAt" = NOW() 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb, "activeVersionId" = $3${archiveSetClause}${nameClause}, "updatedAt" = NOW() 
              WHERE "id" = $4;`,
-            [nodesJson, connectionsJson, currentVersionId, workflowId]
+            queryParams
           );
         } catch (e) {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1, "connections" = $2, "activeVersionId" = $3${archiveSetClause}, "updatedAt" = NOW() 
+             SET "nodes" = $1, "connections" = $2, "activeVersionId" = $3${archiveSetClause}${nameClause}, "updatedAt" = NOW() 
              WHERE "id" = $4;`,
-            [nodesJson, connectionsJson, currentVersionId, workflowId]
+            queryParams
           );
         }
       } else {
+        const queryParams = [nodesJson, connectionsJson, workflowId];
+        if (workflowJson.name) queryParams.push(workflowJson.name);
         try {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1::jsonb, "connections" = $2::jsonb${archiveSetClause}, "updatedAt" = NOW() 
+             SET "nodes" = $1::jsonb, "connections" = $2::jsonb${archiveSetClause}${nameClause}, "updatedAt" = NOW() 
              WHERE "id" = $3;`,
-            [nodesJson, connectionsJson, workflowId]
+            queryParams
           );
         } catch (e) {
           await client.query(
             `UPDATE "${schema}"."workflow_entity" 
-             SET "nodes" = $1, "connections" = $2${archiveSetClause}, "updatedAt" = NOW() 
+             SET "nodes" = $1, "connections" = $2${archiveSetClause}${nameClause}, "updatedAt" = NOW() 
              WHERE "id" = $3;`,
-            [nodesJson, connectionsJson, workflowId]
+            queryParams
           );
         }
       }
