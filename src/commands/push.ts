@@ -964,35 +964,59 @@ export function pushCommand(program: Command) {
                 });
                 if (!res.ok) {
                   const errorText = await res.text();
-                  try {
-                    const json = JSON.parse(errorText);
-                    if (json.message && json.message.toLowerCase().includes('additional properties')) {
-                      let offendingField = '';
-                      if (Array.isArray(json.validation)) {
-                        const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
-                        if (addProp && addProp.params && addProp.params.additionalProperty) {
-                          offendingField = addProp.params.additionalProperty;
-                        }
-                      }
-                      if (!offendingField && Array.isArray(json.errors)) {
-                        const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
-                        if (addProp && addProp.params && addProp.params.additionalProperty) {
-                          offendingField = addProp.params.additionalProperty;
-                        }
-                      }
-                      if (offendingField) {
-                        output.warn(`Warning: Skipping push for workflow '${name}' (ID: ${entry.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
-                        continue;
-                      }
+                  const isPermissionError = errorText.toLowerCase().includes('permission') || 
+                                            errorText.toLowerCase().includes('share') || 
+                                            errorText.toLowerCase().includes('not found') || 
+                                            res.status === 404 || res.status === 403;
+
+                  if (isPermissionError) {
+                    output.log(`  [PERMISSION REPAIR] Seeding owner permissions and restoring workflow '${name}' (ID: ${entry.id})...`);
+                    
+                    if (pgClient) {
+                      try {
+                        await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
+                      } catch (e) {}
                     }
-                  } catch (e) {}
-                  throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
+
+                    try {
+                      await mcp.callTool('update_workflow', {
+                        workflowId: entry.id,
+                        workflow: sanitizedWf,
+                      });
+                    } catch (mcpErr) {
+                      throw new Error(`Failed to update workflow '${name}': REST API returned permission error (${res.statusText}) and MCP fallback failed: ${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}`);
+                    }
+                  } else {
+                    try {
+                      const json = JSON.parse(errorText);
+                      if (json.message && json.message.toLowerCase().includes('additional properties')) {
+                        let offendingField = '';
+                        if (Array.isArray(json.validation)) {
+                          const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
+                          if (addProp && addProp.params && addProp.params.additionalProperty) {
+                            offendingField = addProp.params.additionalProperty;
+                          }
+                        }
+                        if (!offendingField && Array.isArray(json.errors)) {
+                          const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
+                          if (addProp && addProp.params && addProp.params.additionalProperty) {
+                            offendingField = addProp.params.additionalProperty;
+                          }
+                        }
+                        if (offendingField) {
+                          output.warn(`Warning: Skipping push for workflow '${name}' (ID: ${entry.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
+                          continue;
+                        }
+                      }
+                    } catch (e) {}
+                    throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
+                  }
                 }
 
                 // If pgClient is connected, sync/invalidate workflow history and published active version
                 if (pgClient) {
                   try {
-                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson);
+                    await syncWorkflowVersionAndHistory(pgClient, entry.id, workflowJson, projectId);
                   } catch (e) {}
                 }
 

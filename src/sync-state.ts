@@ -90,7 +90,8 @@ export function calculateHash(content: string): string {
 export async function syncWorkflowVersionAndHistory(
   client: any,
   workflowId: string,
-  workflowJson: any
+  workflowJson: any,
+  projectId?: string
 ): Promise<void> {
   if (!client || !workflowId || !workflowJson) return;
 
@@ -110,6 +111,46 @@ export async function syncWorkflowVersionAndHistory(
         schema = colsRes.rows[0].table_schema;
       }
     } catch (e) {}
+
+    // Ensure shared_workflow record and workflow_entity projectId exist
+    if (projectId) {
+      try {
+        const shareCheck = await client.query(`
+          SELECT table_name 
+          FROM information_schema.tables 
+          WHERE table_name = 'shared_workflow' LIMIT 1;
+        `);
+        if (shareCheck.rows.length > 0) {
+          try {
+            await client.query(`
+              INSERT INTO "${schema}"."shared_workflow" ("workflowId", "projectId", "role", "createdAt", "updatedAt")
+              VALUES ($1, $2, 'workflow:owner', NOW(), NOW())
+              ON CONFLICT DO NOTHING;
+            `, [workflowId, projectId]);
+          } catch (e) {
+            try {
+              await client.query(`
+                INSERT INTO "${schema}"."shared_workflow" ("workflowId", "projectId", "role", "createdAt", "updatedAt")
+                VALUES ($1, $2, 'workflow:owner', NOW(), NOW());
+              `, [workflowId, projectId]);
+            } catch (e2) {}
+          }
+        }
+      } catch (e) {}
+
+      try {
+        const wfCols = await client.query(
+          `SELECT column_name FROM information_schema.columns WHERE table_name = 'workflow_entity';`
+        );
+        const colNames = wfCols.rows.map((r: any) => r.column_name);
+        if (colNames.includes('projectId')) {
+          await client.query(
+            `UPDATE "${schema}"."workflow_entity" SET "projectId" = $1 WHERE "id" = $2 AND ("projectId" IS NULL OR "projectId" != $1);`,
+            [projectId, workflowId]
+          );
+        }
+      } catch (e) {}
+    }
 
     // 1. Check/Ensure version snapshot exists in workflow_history
     let currentVersionId: string | null = null;
