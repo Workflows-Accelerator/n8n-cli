@@ -141,6 +141,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 
 ## Key Capabilities of n8ncli
 - **Workflow as Code:** Sync remote workflows as TypeScript files using the official \`@n8n/workflow-sdk\` builder format.
+- **Pure MCP-Only Mode:** Pull and sync workflows using only an instance URL and MCP access token without requiring REST API keys or direct database access.
 - **Local Validation:** Validate workflows locally using schemas without roundtrips to the n8n instance.
 - **Git-friendly Sync:** Pull remote workflows, inspect local modifications, and push changes with conflict detection.
 - **Database-Backed Folder Synchronization:** Sync local folders and categories directly to the remote n8n PostgreSQL database on push.
@@ -153,8 +154,8 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 ### Configuration & Discovery
 - \`n8ncli environments\` / \`n8ncli env\`: Manage n8n environment configurations.
   - \`n8ncli env list\`: List configured environments.
-  - \`n8ncli env test [name]\`: Test REST API, MCP, and PostgreSQL DB connections.
-  - \`n8ncli env edit <name>\`: Configure environment details interactively or via flags.
+  - \`n8ncli env test [name]\`: Test REST API, MCP, and PostgreSQL DB connections (reports SKIPPED for unconfigured optional services).
+  - \`n8ncli env edit <name>\`: Configure environment details interactively (defaults MCP command automatically) or via flags.
   - \`n8ncli env delete <name>\`: Delete an environment configuration.
 - \`n8ncli init [--reset]\`: Initialize workspace config. Use \`--reset\` to reset standards and layout configurations and delete local caches.
 - \`n8ncli projects\`: List accessible projects.
@@ -167,7 +168,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]\`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
 
 ### Syncing
-- \`n8ncli pull [target] [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata (specify target workflow file, ID, or folder path), or simulate the pull without writing to disk.
+- \`n8ncli pull [target] [--force] [--hard] [--dry-run]\`: Pull workflows from n8n instance and sync folder metadata (supports pure MCP-only workflows without REST API key or DB; specify target workflow file, ID, or folder path), or simulate the pull without writing to disk.
 - \`n8ncli push [target] [--all] [--no-cache] [--force] [--dry-run]\`: Deploy local modifications and folder structures (specify target workflow file, ID, or folder path; use \`--no-cache\` to force clean builds across workflows).
 - \`n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--foreground]\`: Start, stop, or inspect the live synchronization background daemon.
 - \`n8ncli status\`: List modified, untracked, deleted, or remote-only files.

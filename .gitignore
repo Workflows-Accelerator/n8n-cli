@@ -1,3 +1,4 @@
+node_modules
 node_modules/
 dist/
 .env
@@ -10,3 +11,5 @@ dist/
 # n8ncli ignored files
 n8n/
 scratch/
+
+.worktrees/

@@ -5,6 +5,7 @@ An optimized TypeScript CLI tool that wraps n8n MCP server tools into fast, toke
 ## Key Features
 
 - **Workflow as Code:** Sync workflows as TypeScript files using the official `@n8n/workflow-sdk` builder format. Supports automatic conversion of local `.json` workflow files to `.workflow.ts`.
+- **Pure MCP-Only Mode:** Pull and develop workflows using only an instance URL and MCP access token without requiring REST API keys or direct database access.
 - **Database-Backed Folder Synchronization**: Directly syncs folder structures to the remote PostgreSQL database on `push` (supporting creates, moves/renames, and deletions of empty folders), with retention safety rules on `pull`.
 - **Multi-Environment Management**: Configures and switches between multiple environments (e.g. `PROD`) defined machine-wide in `~/.n8ncli-global.json`.
 - **Fast Local Validation:** Validate workflows locally using schema checkers without connecting to the n8n instance.
@@ -82,11 +83,12 @@ n8ncli push
 
 ### Scaffolding & Configuration
 - `n8ncli init`: Setup configuration, `.gitignore`, and `.env` credentials. Saves credentials globally.
+- `n8ncli environments` / `env`: Manage environments (`list`, `test`, `edit`, `delete`) with streamlined interactive setup and skipped status reporting for optional services.
 - `n8ncli projects`: List all projects and their IDs.
 - `n8ncli folders`: List all folders under a project.
 
 ### Syncing
-- `n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>]`: Pull workflows from n8n instance and sync folder metadata.
+- `n8ncli pull [--force] [--hard] [--skip-references] [--db-url <url>]`: Pull workflows from n8n instance and sync folder metadata (supports pure MCP-only workflows without REST API key or DB).
 - `n8ncli push [--force] [--dry-run] [--db-url <url>]`: Deploy local modifications and synchronize directory structures.
 - `n8ncli status`: List modified/untracked/deleted files.
 - `n8ncli diff <file>`: Show unified line diff of a local file against remote.

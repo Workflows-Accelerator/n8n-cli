@@ -166,6 +166,7 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
 n8ncli pull [target] [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--dry-run]
 ```
 - Pulls workflows matching configured `projectId`/`folderId` (or specific `[target]` workflow file, ID, or folder path).
+- **Pure MCP-Only Support**: Operates purely over MCP using only an instance URL and MCP access token. Does not require `N8N_API_KEY` or direct PostgreSQL connection (`N8N_DB_URL`).
 - Converts JSON definition to TypeScript using `@n8n/workflow-sdk`'s `generateWorkflowCode`.
 - Writes `.workflow.ts` locally and saves metadata to `sync-state.json`. Warns before overwriting modified local files.
 - **Empty Folder Retention Safety**: Retains empty directories on disk if they exist on the remote instance.
@@ -278,8 +279,8 @@ n8ncli sdk [section-or-query]
 
 ### `n8ncli environments` / `env`
 - `n8ncli env list` (or `n8ncli env` / `envs`): Lists all configured n8n environments from the global configuration (~/.n8ncli-global.json).
-- `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS` or `FAILURE` with connection status details.
-- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
+- `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS`, `FAILURE`, or `SKIPPED` (for unconfigured optional services like REST API or DB) with connection status details.
+- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Interactive mode prompts for instance URL, access token, optional API key, and optional DB URL, automatically defaulting `mcpCommand` without prompting. Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
 - `n8ncli env delete <name>` (or `remove`): Removes an environment configuration from global config settings.
 
 ### `n8ncli lint`
