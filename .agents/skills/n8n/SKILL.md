@@ -37,7 +37,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
   - `n8ncli env test [name]`: Test REST API, MCP, and PostgreSQL DB connections (reports SKIPPED for unconfigured optional services).
   - `n8ncli env edit <name>`: Configure environment details interactively (defaults MCP command automatically) or via flags.
   - `n8ncli env delete <name>`: Delete an environment configuration.
-- `n8ncli init [--reset]`: Initialize workspace config. Use `--reset` to reset standards and layout configurations and delete local caches.
+- `n8ncli init [--include-examples|--no-examples] [--reset]`: Initialize workspace config. Includes built-in reference workflow examples by default. Use `--reset` to reset standards and layout configurations and delete local caches.
 - `n8ncli projects`: List accessible projects.
 - `n8ncli folders`: List and manage folders in an n8n project.
   - `n8ncli folders list [--recursive] [--tree] [--parent-folder-id <id>] [--json]`: List folders under the project. Supports visual tree or recursive view and parent folder filtering.
@@ -45,21 +45,23 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
   - `n8ncli folders move <workflow-id-or-path> <folder-id-or-name>`: Move a workflow to a specific folder in the database.
   - `n8ncli folders delete <folder-id-or-name> [--no-cascade] [--dry-run]`: Delete a folder from the database (supporting dry-run protection).
   - `n8ncli folders set-parent <folder-id-or-name> <parent-folder-id-or-name> [--dry-run]`: Set parent folder for a folder in the database (logs previous parent, supports dry-run protection).
-- `n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]`: Enforce style standards, and auto-correct duplicate node names and connection mapping (optionally restricted to modified files). Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
+- `n8ncli lint [--fix] [--upgrade-nodes] [--only-modified] [--fail-on-warnings]`: Enforce style standards, auto-correct duplicate node names and connection mapping, and optionally auto-upgrade node versions to latest. Exit code 2 is only triggered on warnings if --fail-on-warnings is specified.
 
 ### Syncing
 - `n8ncli pull [target] [--force] [--hard] [--dry-run]`: Pull workflows from n8n instance and sync folder metadata (supports pure MCP-only workflows without REST API key or DB; specify target workflow file, ID, or folder path), or simulate the pull without writing to disk.
-- `n8ncli push [target] [--all] [--no-cache] [--force] [--dry-run]`: Deploy local modifications and folder structures (specify target workflow file, ID, or folder path; use `--no-cache` to force clean builds across workflows).
+- `n8ncli push [target] [--all] [--no-cache] [--force] [--prune] [--dry-run]`: Deploy local modifications and folder structures (specify target workflow file, ID, or folder path; use `--no-cache` to force clean builds across workflows; use `--prune` to purge remote database duplicates).
 - `n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--foreground]`: Start, stop, or inspect the live synchronization background daemon.
 - `n8ncli status`: List modified, untracked, deleted, or remote-only files.
-- `n8ncli diff <file> [--semantic]`: Show line diff of a local file against remote (use `--semantic` to ignore node coordinate/position differences).
+- `n8ncli diff [target] [--all] [--summary] [--semantic] [--json]`: Show code differences between local workflow files and remote n8n versions (specify target workflow file, ID, or folder path; use `--semantic` to ignore coordinate/position differences).
 
 ### Verification, Debugging & Testing
-- `n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]`: Validate syntax, schema, node versions, expression node references, and style standards. Exit code 2 is triggered on warnings if --fail-on-warnings is specified.
+- `n8ncli validate [files...] [--lint] [--upgrade-nodes] [--fix] [--only-modified] [--fail-on-warnings]`: Validate syntax, schema, node versions, expression node references, and style standards. Use `--upgrade-nodes` or `--fix` to automatically bump nodes to their latest typeVersion. Exit code 2 is triggered on warnings if --fail-on-warnings is specified.
 - `n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]`: Execute workflow.
 - `n8ncli test <file-or-id> [--pin-data <file>]`: Test run with mock pin data.
 - `n8ncli execution <file-or-id> <execution-id> [--include-data] [--node <name>]`: Inspect execution details. Specify --include-data to output raw JSON node input/output payload.
-- `n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--db-url <url>]`: Fetch and format recent execution logs and failure stack traces for a workflow.
+- `n8ncli execution inspect <file-or-id-or-execution-id>`: Inspect detailed stack traces, failed node inputs/outputs, and error payloads for an execution.
+- `n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--last-failed] [--db-url <url>]`: Fetch and format recent execution logs and failure stack traces for a workflow (use `--last-failed` for immediate failure diagnostics).
+- `n8ncli webhooks verify [--db-url <url>]`: Audit active webhook routes registered in `webhook_entity` against active workflow trigger definitions in `workflow_entity`.
 - `n8ncli debug <executionId> [--db-url <url>]`: Directly inspect and format error stack trace, failing node parameters, and payload data for a specific execution ID.
 - `n8ncli layout [files...] [--nodesep <px>] [--ranksep <px>] [--grid <px>] [--no-align-terminal-nodes] [--subnode-sep <px>] [--subnode-horizontal-sep <px>] [--alignment <mode>] [--dry-run]`: Auto-position nodes in n8n workflows using Dagre.
 
@@ -144,6 +146,7 @@ Follow these steps when creating, editing, or managing workflows:
 - **File Renaming on Pull:** The `pull` command uses each workflow's remote display name as its filename (e.g., `My Workflow.workflow.ts`). Local files using kebab-case or other naming structures will be renamed on pull. Avoid relying on custom local filenames.
 - **Node Notes & notesInFlow Placement:** In the TypeScript SDK, node-level descriptions/notes and the `notesInFlow` flag must be placed inside the `.config()` block of the node, **not** as top-level node arguments or inside parameters. See the example below.
 - **Inline Ignore Comments:** To prevent a workflow from being synced on push, validated, or linted, add a comment like `// n8ncli-ignore` or `// n8ncli-push-ignore` at the top (within the first 10 lines) of the workflow file.
+- **TS SDK expr(...) AST Parsing Restriction:** When building dynamic strings or SQL queries inside `expr(...)`, concatenating JS identifiers outside quotes like `expr('SELECT ... ' + ($('Inputs').item...))` causes AST compilation errors (`Unknown identifier: '$' is not defined`). Expressions must be kept strictly inside n8n template braces inside the string literal: `expr('SELECT ... {{ $(\'Inputs\').item.json.id ? ... : ... }}')`.
 
 ---
 

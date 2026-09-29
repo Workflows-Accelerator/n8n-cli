@@ -333,11 +333,28 @@ export function execCommand(program: Command) {
             // 3. Run Execution
             output.log(`Triggering execution of workflow ${runWfId} in ${options.mode} mode...`);
 
-            const result = await mcp.callTool('execute_workflow', {
+            let formattedPayload: any = undefined;
+            if (inputs !== undefined) {
+              if (inputs && typeof inputs === 'object' && !Array.isArray(inputs) && inputs.type && ['chat', 'form', 'webhook'].includes(inputs.type)) {
+                formattedPayload = inputs;
+              } else {
+                formattedPayload = {
+                  type: 'webhook',
+                  body: inputs,
+                };
+              }
+            }
+
+            const execArgs: Record<string, any> = {
               workflowId: runWfId,
               executionMode: options.mode,
-              inputs,
-            });
+            };
+            if (formattedPayload !== undefined) {
+              execArgs.payload = formattedPayload;
+              execArgs.inputs = formattedPayload;
+            }
+
+            const result = await mcp.callTool('execute_workflow', execArgs);
 
             const text = result.content?.find((c: any) => c.type === 'text')?.text || '';
             output.log(text || 'Workflow executed successfully.');

@@ -9,6 +9,7 @@ import { loadStandards, validateWorkflowAgainstStandards, fixWorkflowAgainstStan
 import { loadSyncState, saveSyncState, calculateHash } from '../sync-state.js';
 import * as output from '../output.js';
 import { loadNodesDatabase, autoLayoutIfChanged, layoutWorkflow } from '../layout-engine.js';
+import { fetchLatestNodeVersions } from '../mcp-client.js';
 
 function cleanEmptyParentDirs(startDir: string, stopDir: string) {
   let dir = path.resolve(startDir);
@@ -28,8 +29,11 @@ export function lintCommand(program: Command) {
     .command('lint')
     .description('Enforce n8n workflow conventions and naming standards')
     .option('--fix', 'auto-fix naming conventions and suffixes')
+    .option('--upgrade-nodes', 'auto-upgrade node typeVersions to the latest available from n8n MCP server')
     .option('--only-modified', 'only lint files that have local modifications', false)
     .option('--fail-on-warnings', 'fail with exit code 2 if any warnings are detected')
+    .option('--mcp-command <cmd>', 'override MCP server start command')
+    .option('--access-token <token>', 'override n8n access token')
     .action(async (options) => {
       try {
         await loadNodesDatabase();
@@ -48,6 +52,26 @@ export function lintCommand(program: Command) {
         const standards = loadStandards(repoRoot);
         const syncState = loadSyncState(repoRoot, localDir);
         const files = glob.sync('**/*.workflow.ts', { cwd: workflowsDir });
+
+        let latestVersions: Record<string, number> = {};
+        if (options.upgradeNodes) {
+          const uniqueNodeTypes = new Set<string>();
+          for (const file of files) {
+            const fullPath = path.join(workflowsDir, file);
+            if (!fs.existsSync(fullPath)) continue;
+            try {
+              const code = fs.readFileSync(fullPath, 'utf-8');
+              const builder = parseWorkflowCodeToBuilder(code);
+              const json = builder.toJSON();
+              if (json.nodes && Array.isArray(json.nodes)) {
+                for (const node of json.nodes) {
+                  if (node.type) uniqueNodeTypes.add(node.type);
+                }
+              }
+            } catch (e) {}
+          }
+          latestVersions = await fetchLatestNodeVersions(uniqueNodeTypes, options);
+        }
         
         let overallSuccess = true;
         const jsonResults: any[] = [];
@@ -107,7 +131,7 @@ export function lintCommand(program: Command) {
             } catch (e) {}
 
             // Auto-fixing if requested
-            const { modifiedJson, fixedCount } = fixWorkflowAgainstStandards(workflowJson, standards);
+            const { modifiedJson, fixedCount } = fixWorkflowAgainstStandards(workflowJson, standards, options.upgradeNodes ? latestVersions : undefined);
             
             const normalizedFile = file.replace(/\\/g, '/');
             const segments = normalizedFile.split('/');

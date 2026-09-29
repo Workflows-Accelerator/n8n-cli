@@ -120,12 +120,13 @@ All commands support global options: `--verbose` for detailed stderr logging, `-
 
 ### `n8ncli init`
 ```bash
-n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>] [--db-url <url>] [--reset]
+n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] [--project-id <id>] [--folder-id <id>] [--ref-project-id <id>] [--ref-folder-id <id>] [--mcp-command <cmd>] [--db-url <url>] [--include-examples|--no-examples] [--reset]
 ```
 - Sets up folders under `n8n/`.
 - Populates/appends `.env` and `.gitignore`.
 - Establishes `n8n/config/n8n-cli.json`.
 - Saves configurations globally to `~/.n8ncli-global.json` under the specified `--env` namespace.
+- **`--include-examples` / `--no-examples`**: Includes built-in reference workflow examples in `n8n/references/` by default.
 - **`--reset`**: Resets the default config files (`n8n-standards.json` and `n8n-layout.json`) to defaults and removes transient local cache files (`sync-state.json`, `workflow-folders.json`, and `unconfigured-credentials.json`). By default, without `--reset`, existing configuration files and custom rules are preserved.
 
 ### `n8ncli projects`
@@ -176,10 +177,11 @@ n8ncli pull [target] [--force] [--hard] [--skip-references] [--db-url <url>] [--
 
 ### `n8ncli push`
 ```bash
-n8ncli push [target] [--all] [--no-cache] [--force] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
+n8ncli push [target] [--all] [--no-cache] [--force] [--prune] [--dry-run] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--mcp-command <cmd>] [--access-token <token>]
 ```
 - Evaluates differences between local `.workflow.ts` files, sync state, and remote instance (optionally scoped to `[target]` workflow file, ID, or folder).
 - **`--no-cache`**: Bypasses local sync state content hashes to force clean compilation, linting, layout, and re-pushing of all targeted workflows.
+- **`--prune`**: Purges remote database UI-generated duplicate workflows that match local canonical declarations with mismatched IDs.
 - **Deletions:** Calls `archive_workflow` for workflows removed locally.
 - **Creations:** Parses local TS code to JSON, runs `create_workflow_from_code` on n8n.
 - **Updates:** Runs `update_workflow` for modified TS files, displaying overwrite warnings when updating existing remote snapshots.
@@ -197,17 +199,20 @@ n8ncli status [--mcp-command <cmd>] [--access-token <token>] [--api-key <key>] [
 
 ### `n8ncli diff`
 ```bash
-n8ncli diff <file> [--semantic]
+n8ncli diff [target] [--all] [--summary] [--semantic] [--json]
 ```
-- Retrieves remote version, converts to TS, and prints unified diff (`+` and `-` lines) against the local version.
-- **Semantic Diffing (`--semantic`)**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff.
+- Shows differences between local workflow files and remote versions in n8n (optional target workflow file, ID, or folder path).
+- **`--summary`**: Only prints a summary list of diff statuses without printing full line diffs.
+- **`--semantic`**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff.
+- **`--json`**: Outputs structured JSON summarizing modified, identical, untracked, and errored workflows.
 
-### `n8ncli validate` / `n8ncli lint`
-  ```bash
-  n8ncli validate [files...] [--lint] [--only-modified] [--fail-on-warnings]
-  ```
-  - Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schema validation and static analysis for broken `$('Node Name')` / `$node['Node Name']` node expression references. Exit code `2` on validation failure or if `--fail-on-warnings` is specified and warnings are detected.
-  - **`--lint`**: Enforces naming standards, title casing, node description notes, and static expression references.
+### `n8ncli validate`
+```bash
+n8ncli validate [files...] [--lint] [--upgrade-nodes] [--fix] [--only-modified] [--fail-on-warnings]
+```
+- Compiles TS workflows using `@n8n/workflow-sdk`'s `parseWorkflowCodeToBuilder` and executes local schema validation and static analysis for broken `$('Node Name')` / `$node['Node Name']` node expression references. Exit code `2` on validation failure or if `--fail-on-warnings` is specified and warnings are detected.
+- **`--upgrade-nodes` / `--fix`**: Queries n8n MCP server for the latest node typeVersions and automatically upgrades outdated nodes in local workflow files.
+- **`--lint`**: Enforces naming standards, title casing, node description notes, and static expression references.
 
 ### `n8ncli exec`
 ```bash
@@ -223,15 +228,24 @@ n8ncli test <workflow-id-or-file> [--pin-data <json-file>]
 
 ### `n8ncli execution`
 ```bash
-n8ncli execution <workflow-id-or-file> <execution-id> [--include-data] [--nodes <names...>] [--node <names...>] [--truncate <n>]
+n8ncli execution [workflow-id-or-file] [execution-id] [--include-data] [--nodes <names...>] [--node <names...>] [--truncate <n>]
+n8ncli execution inspect <workflow-id-or-file-or-execution-id> [execution-id]
 ```
-- Retrieves status, duration, error messages, and output payload from a run execution.
+- Retrieves status, duration, error messages, and output payload from a run execution. Supports direct PostgreSQL querying from `execution_entity` and `execution_data`.
+- **`inspect` sub-command**: Inspects detailed stack traces, failed node inputs/outputs, and error payloads for an execution.
 
 ### `n8ncli logs`
 ```bash
-n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--db-url <url>]
+n8ncli logs [workflow-id-or-file] [--limit <n>] [--failed-only] [--last-failed] [--db-url <url>]
 ```
 - Fetches and formats recent execution logs for a workflow from PostgreSQL database or API, displaying execution status, failing node name, error message, and stack trace for failed runs.
+- **`--last-failed`**: Fetches and displays the single most recent failed execution with full stack trace and error payload snapshot.
+
+### `n8ncli webhooks`
+```bash
+n8ncli webhooks verify [--db-url <url>] [--json]
+```
+- Validates that all active webhook routes in `webhook_entity` match active workflow trigger definitions in `workflow_entity`. Reports valid, orphaned, and missing webhook routes.
 
 ### `n8ncli debug`
 ```bash
@@ -285,10 +299,11 @@ n8ncli sdk [section-or-query]
 
 ### `n8ncli lint`
   ```bash
-  n8ncli lint [--fix] [--only-modified] [--fail-on-warnings]
+  n8ncli lint [--fix] [--upgrade-nodes] [--only-modified] [--fail-on-warnings]
   ```
   - Validates local workflow style standards against `n8n-standards.json`.
   - Automatically corrects duplicate node name formatting and expression connections when `--fix` is passed.
+  - **`--upgrade-nodes`**: Queries n8n MCP server for latest node typeVersions and updates nodes in workflow files.
   - **`--only-modified`**: Only runs lint checks on workflows that have local modifications (new, modified, or renamed compared to `sync-state.json`).
   - **`--fail-on-warnings`**: Fails with exit code `2` if any warnings are detected.
 

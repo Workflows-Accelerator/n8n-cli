@@ -3,36 +3,12 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import { findRepoRoot, loadConfig, convertLocalJsonWorkflows, resolveAndConvertTarget, getConnectionInfo } from '../config.js';
-import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
-import { withMcp } from '../mcp-client.js';
+import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
+import { withMcp, parseLatestVersions, fetchLatestNodeVersions } from '../mcp-client.js';
 import * as output from '../output.js';
 import { loadStandards, validateWorkflowAgainstStandards, isIgnored, diagnoseChainParentheses } from '../lint-engine.js';
-import { loadSyncState, calculateHash } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash } from '../sync-state.js';
 import { loadNodesDatabase } from '../layout-engine.js';
-
-function parseLatestVersions(text: string): Record<string, number> {
-  const versions: Record<string, number> = {};
-  const lines = text.split('\n');
-  let currentId: string | null = null;
-
-  for (const line of lines) {
-    const nodeMatch = line.match(/^-\s+([a-zA-Z0-9.-]+)(?:\s+\[TRIGGER\])?\s*$/i);
-    if (nodeMatch) {
-      currentId = nodeMatch[1];
-      continue;
-    }
-    if (currentId) {
-      const versionMatch = line.match(/^\s*Version:\s*([0-9.]+)\s*$/i);
-      if (versionMatch) {
-        versions[currentId] = parseFloat(versionMatch[1]);
-        currentId = null;
-      } else if (line.startsWith('- ')) {
-        currentId = null;
-      }
-    }
-  }
-  return versions;
-}
 
 export function validateCommand(program: Command) {
   program
@@ -40,6 +16,8 @@ export function validateCommand(program: Command) {
     .description('Validate local workflow TypeScript files against n8n schemas')
     .argument('[files...]', 'specific workflow files to validate (defaults to all under n8n/workflows/)')
     .option('--no-version-check', 'skip node version validation against n8n instance')
+    .option('--upgrade-nodes', 'auto-upgrade node typeVersions to the latest available from n8n MCP server')
+    .option('--fix', 'auto-correct node typeVersions to latest versions (alias for --upgrade-nodes)')
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
     .option('--api-key <key>', 'override n8n REST API key')
@@ -194,32 +172,7 @@ export function validateCommand(program: Command) {
         // 2. Query MCP for latest versions of unique node types
         let latestVersions: Record<string, number> = {};
         if (options.versionCheck !== false && uniqueNodeTypes.size > 0) {
-          try {
-            const { mcpCommand, accessToken } = getConnectionInfo(options);
-            await withMcp(mcpCommand, accessToken, async (mcp) => {
-              const queries = Array.from(uniqueNodeTypes);
-              let text = '';
-              const retries = 3;
-              for (let attempt = 1; attempt <= retries; attempt++) {
-                try {
-                  text = await mcp.callToolAndGetText('search_nodes', { queries });
-                  break;
-                } catch (err) {
-                  const errMsg = err instanceof Error ? err.message : String(err);
-                  const isRateLimit = errMsg.includes('Too many requests') || errMsg.includes('429');
-                  if (isRateLimit && attempt < retries) {
-                    output.warn(`Rate limit on MCP search_nodes. Retrying in 2 seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    continue;
-                  }
-                  throw err;
-                }
-              }
-              latestVersions = parseLatestVersions(text);
-            });
-          } catch (err) {
-            output.warn(`Warning: Could not connect to n8n MCP to fetch latest node versions. Skipping version validation. (${err instanceof Error ? err.message : String(err)})`);
-          }
+          latestVersions = await fetchLatestNodeVersions(uniqueNodeTypes, options);
         }
 
         // 3. Second pass: Validate each workflow and check node versions
@@ -294,17 +247,38 @@ export function validateCommand(program: Command) {
             } catch (e) {}
           }
 
-          // Node version validation
+          // Node version validation & auto-upgrades
           if (options.versionCheck !== false) {
             try {
               const workflowJson = builder.toJSON();
+              let upgradedCount = 0;
+              const shouldUpgrade = !!(options.upgradeNodes || options.fix);
+
               if (workflowJson.nodes && Array.isArray(workflowJson.nodes)) {
                 for (const node of workflowJson.nodes) {
                   if (node.type && node.typeVersion !== undefined) {
                     const latest = latestVersions[node.type];
                     if (latest !== undefined && node.typeVersion < latest) {
-                      errors.push(`Node "${node.name || node.type}" is using version ${node.typeVersion}, but the latest version is ${latest}.`);
+                      if (shouldUpgrade) {
+                        node.typeVersion = latest;
+                        upgradedCount++;
+                      } else {
+                        errors.push(`Node "${node.name || node.type}" is using version ${node.typeVersion}, but the latest version is ${latest}.`);
+                      }
                     }
+                  }
+                }
+
+                if (shouldUpgrade && upgradedCount > 0) {
+                  const upgradedCode = generateWorkflowCode(workflowJson);
+                  fs.writeFileSync(pw.file, upgradedCode, 'utf-8');
+                  const stateKey = path.relative(workflowsDir, pw.file).replace(/\\/g, '/');
+                  if (syncState.workflows[stateKey]) {
+                    syncState.workflows[stateKey].contentHash = calculateHash(upgradedCode);
+                  }
+                  saveSyncState(repoRoot, syncState, localDir);
+                  if (!output.getJsonMode()) {
+                    output.log(`[UPGRADED] ${relativePath} (${upgradedCount} node${upgradedCount > 1 ? 's' : ''} upgraded to latest typeVersion)`);
                   }
                 }
               }

@@ -21,7 +21,8 @@ import {
   loadWorkflowCache,
   deleteWorkflowCache,
   SyncState,
-  SyncWorkflowEntry
+  SyncWorkflowEntry,
+  resolveRemoteWorkflow
 } from '../sync-state.js';
 import { showConflictDiff, stripPositions } from './diff.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
@@ -831,20 +832,27 @@ export function liveCommand(program: Command) {
               const alreadyTracked = Object.values(syncState.workflows).some(e => e.localPath === relPath || e.id === lw.id);
 
               if (!alreadyTracked && lw.code) {
-                // Check if the id is already used remotely
-                if (lw.id && remoteMap.has(lw.id)) {
-                  // Re-associate local untracked file with existing remote ID
-                  const rw = remoteMap.get(lw.id)!;
-                  output.log(`[LIVE] Re-associating local file '${relPath}' with remote workflow '${rw.name}' (${rw.id})`);
+                const remoteList = Array.from(remoteMap.values());
+                const resolution = resolveRemoteWorkflow(
+                  { localPath: relPath, code: lw.code, name: lw.name, localId: lw.id },
+                  remoteList,
+                  repoRoot,
+                  syncState,
+                  localDir
+                );
+
+                if (resolution.remoteWorkflow) {
+                  const rw = resolution.remoteWorkflow;
+                  output.log(`[LIVE] Re-associating local file '${relPath}' (${resolution.matchReason} match) with remote workflow '${rw.name}' (${rw.id})`);
                   syncState.workflows[relPath] = {
-                    id: rw.id,
+                    id: String(rw.id),
                     name: rw.name,
                     localPath: relPath,
                     contentHash: lw.contentHash,
-                    remoteUpdatedAt: rw.updatedAt,
+                    remoteUpdatedAt: rw.updatedAt || new Date().toISOString(),
                     folderId: rw.parentFolderId || undefined,
                   };
-                  saveWorkflowCache(repoRoot, rw.id, lw.code, localDir);
+                  saveWorkflowCache(repoRoot, String(rw.id), lw.code, localDir);
                 } else {
                   // Brand new local file -> create remote workflow
                   output.log(`[LIVE] Creating remote workflow for new local file: ${relPath}`);
@@ -866,7 +874,6 @@ export function liveCommand(program: Command) {
 
                     let newId = extractIdFromResponse(response);
                     if (!newId) {
-                      // fallback name search
                       try {
                         const searchResult = await mcp!.callToolAndGetJson('search_workflows', { projectId, limit: 200 });
                         const list = Array.isArray(searchResult) ? searchResult : (searchResult.data || searchResult.workflows || []);

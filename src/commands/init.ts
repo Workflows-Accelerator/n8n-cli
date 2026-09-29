@@ -6,6 +6,7 @@ import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 import { writeSkillFile } from './import-skill.js';
 import { saveDefaultStandards } from '../lint-engine.js';
+import { pullReferences } from '../references.js';
 import readline from 'readline';
 
 function askQuestion(query: string, defaultValue = ''): Promise<string> {
@@ -38,6 +39,8 @@ export function initCommand(program: Command) {
     .option('--ref-env <name>', 'environment name for reference workflows')
     .option('--mcp-command <cmd>', 'MCP server start command')
     .option('--dir <path>', 'local directory for n8n files (defaults to n8n)', 'n8n')
+    .option('--include-examples', 'include built-in reference workflow examples', true)
+    .option('--no-examples', 'do not include built-in reference workflow examples')
     .option('--interactive', 'run interactive configuration wizard', false)
     .option('--reset', 'reset the default config files (standards & layout) and delete local caches', false)
     .action(async (options) => {
@@ -54,6 +57,7 @@ export function initCommand(program: Command) {
       let refFolderId = options.refFolderId;
       let refEnv = options.refEnv;
       const localDir = options.dir || 'n8n';
+      let includeExamples = options.examples !== false && options.includeExamples !== false;
 
       let projectName = 'Personal';
       let folderName: string | undefined = undefined;
@@ -165,6 +169,9 @@ export function initCommand(program: Command) {
                   }
                 }
               }
+            } else {
+              const askExamples = await askQuestion('Include built-in reference workflow examples? (y/n) [y]', 'y');
+              includeExamples = askExamples.toLowerCase() === 'y';
             }
           }, instanceUrl);
         } catch (err) {
@@ -393,6 +400,13 @@ export function initCommand(program: Command) {
         }
       } else if (existingConfig && existingConfig.references) {
         config.references = existingConfig.references;
+      } else if (includeExamples) {
+        config.references = [
+          {
+            name: 'Workflow Examples Ref',
+            builtin: 'examples'
+          }
+        ];
       }
 
       saveConfig(repoRoot, config);
@@ -447,6 +461,13 @@ export function initCommand(program: Command) {
         }
       } else {
         output.log(`Using existing layout settings in ${localDir}/config/n8n-layout.json`);
+      }
+
+      // Pull/sync reference workflows (including built-in examples if configured)
+      try {
+        await pullReferences(null as any, config, repoRoot, {}, instanceUrl || '', apiKey || '', false, envName);
+      } catch (err) {
+        output.debug(`Initial reference sync note: ${err instanceof Error ? err.message : String(err)}`);
       }
 
       output.log('\nGenerated config files:');

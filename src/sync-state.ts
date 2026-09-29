@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 
 export interface SyncWorkflowEntry {
   id: string;
@@ -335,16 +336,20 @@ export function isTargetScoped(
 
   const normTarget = targetArg.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
   const normRelPath = relPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
-  
-  // 1. Direct match on relative path
-  if (normRelPath === normTarget || normRelPath === `${normTarget}.workflow.ts`) return true;
 
-  // 2. Folder prefix match (e.g. target is "Leads" or "workflows/Leads", matches "Leads/Lead Router.workflow.ts")
-  if (normRelPath.startsWith(`${normTarget}/`)) return true;
-  
-  // Strip 'workflows/' prefix if target included it
-  const cleanTarget = normTarget.startsWith('workflows/') ? normTarget.slice(10) : normTarget;
-  if (normRelPath.startsWith(`${cleanTarget}/`)) return true;
+  // Strip 'n8n/workflows/' or 'workflows/' prefix if target included it
+  let cleanTarget = normTarget;
+  if (cleanTarget.startsWith('n8n/workflows/')) {
+    cleanTarget = cleanTarget.slice(14);
+  } else if (cleanTarget.startsWith('workflows/')) {
+    cleanTarget = cleanTarget.slice(10);
+  }
+
+  // 1. Direct match on relative path or file
+  if (normRelPath === cleanTarget || normRelPath === `${cleanTarget}.workflow.ts`) return true;
+
+  // 2. Folder prefix match (e.g. target is "API/Document Processing/Propounding", matches "API/Document Processing/Propounding/Workflow.workflow.ts")
+  if (normRelPath.startsWith(`${cleanTarget}/`) || normRelPath.toLowerCase().startsWith(`${cleanTarget.toLowerCase()}/`)) return true;
 
   // 3. Match workflow ID
   if (workflowId && workflowId === targetArg.trim()) return true;
@@ -356,6 +361,288 @@ export function isTargetScoped(
   if (workflowName && workflowName.toLowerCase() === targetBase) return true;
 
   return false;
+}
+
+/**
+ * Fetches all remote workflows from n8n MCP tool, handling pagination to avoid limit truncation.
+ */
+export async function fetchAllRemoteWorkflows(mcp: any, options: { projectId?: string } = {}): Promise<any[]> {
+  const allWorkflows: any[] = [];
+  const seenIds = new Set<string>();
+  let offset = 0;
+  const limit = 200;
+
+  while (true) {
+    try {
+      const searchResult = await mcp.callToolAndGetJson('search_workflows', {
+        projectId: options.projectId,
+        limit,
+        offset,
+      });
+      const list = Array.isArray(searchResult) ? searchResult : (searchResult.data || searchResult.workflows || []);
+      if (!list || list.length === 0) break;
+
+      let newItemsAdded = 0;
+      for (const item of list) {
+        if (item && item.id && !seenIds.has(String(item.id))) {
+          seenIds.add(String(item.id));
+          allWorkflows.push(item);
+          newItemsAdded++;
+        }
+      }
+
+      if (list.length < limit || newItemsAdded === 0) break;
+      offset += limit;
+    } catch (err) {
+      break;
+    }
+  }
+
+  return allWorkflows;
+}
+
+/**
+ * Generates a deterministic structural fingerprint for a workflow based on its nodes and connection topology.
+ */
+export function getWorkflowFingerprint(nodes: any[] = [], connections: any = {}): string {
+  const normNodes = (nodes || []).map(n => {
+    const paramKeys = n.parameters ? Object.keys(n.parameters).sort() : [];
+    return {
+      name: n.name || '',
+      type: n.type || '',
+      typeVersion: n.typeVersion || 1,
+      parameterKeys: paramKeys,
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+
+  const sortedConn: Record<string, any> = {};
+  const connKeys = Object.keys(connections || {}).sort();
+  for (const srcNode of connKeys) {
+    sortedConn[srcNode] = connections[srcNode];
+  }
+
+  const payload = JSON.stringify({ nodes: normNodes, connections: sortedConn });
+  return crypto.createHash('sha256').update(payload).digest('hex');
+}
+
+/**
+ * Recovers a lost workflow ID from sync-state, embedded JSON, or cached workflow files on disk.
+ */
+export function recoverWorkflowIdFromCacheOrState(
+  repoRoot: string,
+  localPath: string,
+  code: string,
+  syncState: SyncState,
+  localDir: string = 'n8n'
+): string | null {
+  const stateEntry = syncState.workflows[localPath];
+  if (stateEntry && stateEntry.id) return stateEntry.id;
+
+  try {
+    const builder = parseWorkflowCodeToBuilder(code);
+    const json = builder.toJSON();
+    if (json && json.id) return String(json.id);
+  } catch (e) {}
+
+  const cacheDir = path.join(repoRoot, localDir, 'config', 'cache', 'workflows');
+  if (fs.existsSync(cacheDir)) {
+    try {
+      const files = fs.readdirSync(cacheDir);
+      const cleanCode = code.replace(/\s+/g, '');
+      for (const file of files) {
+        if (file.endsWith('.workflow.ts')) {
+          const cachedContent = fs.readFileSync(path.join(cacheDir, file), 'utf-8');
+          if (cachedContent.replace(/\s+/g, '') === cleanCode) {
+            return file.replace(/\.workflow\.ts$/, '');
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  return null;
+}
+
+export interface WorkflowResolutionResult {
+  remoteWorkflow: any | null;
+  matchReason: 'id' | 'cache' | 'fingerprint' | 'name' | null;
+}
+
+/**
+ * Resolves a local workflow to a remote n8n workflow using a robust 4-tier hierarchy:
+ * Tier 1: Direct ID Match
+ * Tier 2: Recovered Cache ID Match
+ * Tier 3: Node Structural Fingerprint Match
+ * Tier 4: Case-insensitive Name Match (Active & Archived)
+ */
+export function resolveRemoteWorkflow(
+  localFile: { localPath: string; code?: string; name: string; localId?: string; json?: any },
+  remoteWorkflows: any[],
+  repoRoot: string,
+  syncState: SyncState,
+  localDir: string = 'n8n'
+): WorkflowResolutionResult {
+  if (!remoteWorkflows || remoteWorkflows.length === 0) {
+    return { remoteWorkflow: null, matchReason: null };
+  }
+
+  let localJson = localFile.json;
+  if (!localJson && localFile.code) {
+    try {
+      localJson = parseWorkflowCodeToBuilder(localFile.code).toJSON();
+    } catch (e) {}
+  }
+
+  const effectiveId = localFile.localId || localJson?.id || syncState.workflows[localFile.localPath]?.id;
+
+  // Tier 1: Direct ID Match
+  if (effectiveId) {
+    const match = remoteWorkflows.find(w => String(w.id) === String(effectiveId));
+    if (match) return { remoteWorkflow: match, matchReason: 'id' };
+  }
+
+  // Tier 2: Cache-based Recovered ID Match
+  if (localFile.code) {
+    const recoveredId = recoverWorkflowIdFromCacheOrState(repoRoot, localFile.localPath, localFile.code, syncState, localDir);
+    if (recoveredId) {
+      const match = remoteWorkflows.find(w => String(w.id) === String(recoveredId));
+      if (match) return { remoteWorkflow: match, matchReason: 'cache' };
+    }
+  }
+
+  // Tier 3: Node Structural Fingerprint Match
+  if (localJson && localJson.nodes) {
+    const localFingerprint = getWorkflowFingerprint(localJson.nodes, localJson.connections);
+    for (const rw of remoteWorkflows) {
+      if (rw.nodes) {
+        const remoteFingerprint = getWorkflowFingerprint(rw.nodes, rw.connections);
+        if (localFingerprint === remoteFingerprint) {
+          return { remoteWorkflow: rw, matchReason: 'fingerprint' };
+        }
+      }
+    }
+  }
+
+  // Tier 4: Trimmed Case-Insensitive Name Match
+  const targetName = localFile.name.trim().toLowerCase();
+  const matchByName = remoteWorkflows.find(w => w.name && w.name.trim().toLowerCase() === targetName);
+  if (matchByName) {
+    return { remoteWorkflow: matchByName, matchReason: 'name' };
+  }
+
+  return { remoteWorkflow: null, matchReason: null };
+}
+
+/**
+ * Surgically purges remote UI-generated duplicate workflow records that overlap in name/path with canonical repository files.
+ * Cleans across workflow_entity, webhook_entity, workflow_history, workflow_published_version, and shared_workflow.
+ */
+export async function purgeOrphanedRemoteWorkflows(
+  pgClient: any,
+  canonicalWorkflows: Array<{ id: string; name: string; localPath: string }>,
+  remoteWorkflows: any[]
+): Promise<{ prunedCount: number; prunedIds: string[] }> {
+  if (!pgClient || !remoteWorkflows || remoteWorkflows.length === 0) {
+    return { prunedCount: 0, prunedIds: [] };
+  }
+
+  const canonicalIds = new Set(canonicalWorkflows.map(w => String(w.id)));
+  const canonicalNames = new Set(canonicalWorkflows.map(w => w.name.trim().toLowerCase()));
+
+  const orphanedWorkflows = remoteWorkflows.filter(w => 
+    canonicalNames.has(String(w.name).trim().toLowerCase()) && !canonicalIds.has(String(w.id))
+  );
+
+  if (orphanedWorkflows.length === 0) {
+    return { prunedCount: 0, prunedIds: [] };
+  }
+
+  const orphanedIds = orphanedWorkflows.map(w => String(w.id));
+
+  let schema = 'public';
+  try {
+    const colsRes = await pgClient.query(`
+      SELECT table_schema FROM information_schema.columns WHERE table_name = 'workflow_entity' LIMIT 1;
+    `);
+    if (colsRes.rows.length > 0) schema = colsRes.rows[0].table_schema;
+  } catch (e) {}
+
+  for (const orphanId of orphanedIds) {
+    try {
+      await pgClient.query(`DELETE FROM "${schema}"."webhook_entity" WHERE "workflowId" = $1;`, [orphanId]);
+    } catch (e) {}
+    try {
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_history" WHERE "workflowId" = $1;`, [orphanId]);
+    } catch (e) {}
+    try {
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_published_version" WHERE "workflowId" = $1;`, [orphanId]);
+    } catch (e) {}
+    try {
+      await pgClient.query(`DELETE FROM "${schema}"."shared_workflow" WHERE "workflowId" = $1;`, [orphanId]);
+    } catch (e) {}
+    try {
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_entity" WHERE "id" = $1;`, [orphanId]);
+    } catch (e) {}
+  }
+
+  return { prunedCount: orphanedIds.length, prunedIds: orphanedIds };
+}
+
+/**
+ * Surgically rekeys an existing remote workflow's primary key ID in PostgreSQL database tables
+ * to match the declared workflow ID in local code, preventing duplicate remote workflows.
+ */
+export async function rekeyRemoteWorkflowId(
+  pgClient: any,
+  oldId: string,
+  newId: string
+): Promise<boolean> {
+  if (!pgClient || !oldId || !newId || oldId === newId) {
+    return false;
+  }
+
+  let schema = 'public';
+  try {
+    const colsRes = await pgClient.query(`
+      SELECT table_schema FROM information_schema.columns WHERE table_name = 'workflow_entity' LIMIT 1;
+    `);
+    if (colsRes.rows.length > 0) schema = colsRes.rows[0].table_schema;
+  } catch (e) {}
+
+  try {
+    const checkRes = await pgClient.query(`SELECT id FROM "${schema}"."workflow_entity" WHERE id = $1;`, [newId]);
+    if (checkRes.rows.length > 0) {
+      // New ID already exists on remote, delete old duplicate record
+      await pgClient.query(`DELETE FROM "${schema}"."webhook_entity" WHERE "workflowId" = $1;`, [oldId]);
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_history" WHERE "workflowId" = $1;`, [oldId]);
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_published_version" WHERE "workflowId" = $1;`, [oldId]);
+      await pgClient.query(`DELETE FROM "${schema}"."shared_workflow" WHERE "workflowId" = $1;`, [oldId]);
+      await pgClient.query(`DELETE FROM "${schema}"."execution_entity" WHERE "workflowId" = $1;`, [oldId]);
+      await pgClient.query(`DELETE FROM "${schema}"."workflow_entity" WHERE id = $1;`, [oldId]);
+      return true;
+    }
+
+    const fkTables = [
+      { table: 'webhook_entity', col: 'workflowId' },
+      { table: 'workflow_history', col: 'workflowId' },
+      { table: 'workflow_published_version', col: 'workflowId' },
+      { table: 'shared_workflow', col: 'workflowId' },
+      { table: 'workflows_tags', col: 'workflowId' },
+      { table: 'workflow_dependency', col: 'workflowId' },
+      { table: 'execution_entity', col: 'workflowId' },
+    ];
+
+    for (const item of fkTables) {
+      try {
+        await pgClient.query(`UPDATE "${schema}"."${item.table}" SET "${item.col}" = $1 WHERE "${item.col}" = $2;`, [newId, oldId]);
+      } catch (e) {}
+    }
+
+    await pgClient.query(`UPDATE "${schema}"."workflow_entity" SET id = $1 WHERE id = $2;`, [newId, oldId]);
+    return true;
+  } catch (err) {
+    return false;
+  }
 }
 
 

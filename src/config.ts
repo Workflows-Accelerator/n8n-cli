@@ -8,6 +8,7 @@ import * as output from './output.js';
 
 export interface ReferenceSource {
   name?: string;
+  builtin?: string | boolean;
   env?: string;
   projectId?: string;
   projectName?: string;

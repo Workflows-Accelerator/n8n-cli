@@ -31,10 +31,12 @@ export function debugCommand(program: Command) {
           await pgClient.connect();
 
           const queryStr = `
-            SELECT e.id, e."finished", e."mode", e."status", e."startedAt", e."stoppedAt", e."workflowId", e."workflowData",
+            SELECT e.id, e."finished", e."mode", e."status", e."startedAt", e."stoppedAt", e."workflowId",
+                   w.name AS workflow_name,
                    d.data AS execution_data
             FROM execution_entity e
             LEFT JOIN execution_data d ON e.id = d."executionId"
+            LEFT JOIN workflow_entity w ON e."workflowId" = w.id
             WHERE e.id = $1 OR e.id::text = $1;
           `;
 
@@ -47,16 +49,11 @@ export function debugCommand(program: Command) {
                 dataObj = typeof row.execution_data === 'string' ? JSON.parse(row.execution_data) : row.execution_data;
               } catch (e) {}
             }
-            let wfDataObj: any = null;
-            if (row.workflowData) {
-              try {
-                wfDataObj = typeof row.workflowData === 'string' ? JSON.parse(row.workflowData) : row.workflowData;
-              } catch (e) {}
-            }
+            const wfDataObj = dataObj?.workflowData || null;
             execution = {
               id: row.id,
               workflowId: row.workflowId,
-              workflowName: wfDataObj?.name || 'Unknown Workflow',
+              workflowName: row.workflow_name || wfDataObj?.name || 'Unknown Workflow',
               finished: row.finished,
               status: row.status || (row.finished ? 'success' : 'failed'),
               mode: row.mode,

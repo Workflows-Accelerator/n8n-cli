@@ -27,6 +27,7 @@ import { liveCommand } from './commands/live.js';
 import { datatablesCommand } from './commands/datatables.js';
 import { logsCommand } from './commands/logs.js';
 import { debugCommand } from './commands/debug.js';
+import { webhooksCommand } from './commands/webhooks.js';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -76,6 +77,7 @@ standardsCommand(program);
 layoutCommand(program);
 liveCommand(program);
 datatablesCommand(program);
+webhooksCommand(program);
 
 
 // Parse arguments asynchronously

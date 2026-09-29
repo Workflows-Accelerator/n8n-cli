@@ -4,7 +4,7 @@ import path from 'path';
 import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, loadFolderCache, saveFolderCache, getWorkflowDetails, loadGlobalConfig, fetchWorkflowsWithDb, convertLocalJsonWorkflows, syncCredentials, fetchWorkflowsPaginated } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, isTargetScoped } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, isTargetScoped, fetchAllRemoteWorkflows } from '../sync-state.js';
 import { pullReferences } from '../references.js';
 import { generateWorkflowCode, parseWorkflowCodeToBuilder } from '@n8n/workflow-sdk';
 import { stripPositions } from './diff.js';
@@ -392,12 +392,17 @@ export function pullCommand(program: Command) {
             }
 
             // 3. Fetch remote workflows list
-            const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
-              projectId,
-              limit: 200,
-            });
+            let workflows: any[] = [];
+            try {
+              workflows = await fetchAllRemoteWorkflows(mcp, { projectId });
+            } catch (err) {
+              const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
+                projectId,
+                limit: 200,
+              });
+              workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
+            }
 
-            const workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
             const availableWorkflows = workflows.filter((w: any) => w.availableInMCP !== false);
             
             // Fetch remote details of all workflows and filter by folder configured

@@ -54,7 +54,7 @@ function generateFolderId(): string {
   return result;
 }
 
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, syncWorkflowVersionAndHistory, isTargetScoped } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, syncWorkflowVersionAndHistory, isTargetScoped, fetchAllRemoteWorkflows, resolveRemoteWorkflow, purgeOrphanedRemoteWorkflows, rekeyRemoteWorkflowId } from '../sync-state.js';
 
 export function pushCommand(program: Command) {
   program
@@ -63,6 +63,7 @@ export function pushCommand(program: Command) {
     .option('--all', 'explicitly target all workflows in workspace', false)
     .option('--no-cache', 'bypass local sync state hashes and force clean compilation and re-push', false)
     .option('--force', 'overwrite remote modifications and bypass conflict checks', false)
+    .option('--prune', 'purge remote UI-generated duplicate workflows matching local declarations with mismatched IDs', false)
     .option('--dry-run', 'simulate changes without executing them', false)
     .option('--mcp-command <cmd>', 'override MCP server start command')
     .option('--access-token <token>', 'override n8n access token')
@@ -566,61 +567,77 @@ export function pushCommand(program: Command) {
 
         // 10. Connect to MCP and execute actions
         await withMcp(mcpCommand, accessToken, async (mcp) => {
-          // 0. Fetch remote workflows in scope to detect collisions
+          // 0. Fetch all remote workflows in scope to detect collisions
           let remoteWorkflows: any[] = [];
           try {
-            const list = await mcp.callToolAndGetJson('search_workflows', {
-              projectId,
-              limit: 200,
-            });
-            remoteWorkflows = Array.isArray(list) ? list : (list.data || list.workflows || []);
+            remoteWorkflows = await fetchAllRemoteWorkflows(mcp, { projectId });
           } catch (err) {
             output.warn(`Failed to fetch remote workflows: ${err instanceof Error ? err.message : String(err)}. Skipping duplicate checks.`);
           }
 
           const archivedWorkflowsToUnarchive = new Set<string>();
 
-          // Validate "new" workflows to prevent duplicates
+          // Validate "new" workflows using multi-tier resolution to prevent duplicates
           for (const relPath of [...newPaths]) {
             const localId = localIds[relPath];
             const name = localNames[relPath];
+            const code = localCodes[relPath];
 
-            // Scenario A: The workflow ID already exists on n8n.
-            // (State was just lost/untracked locally. Update it instead of creating a duplicate)
-            const matchById = localId ? remoteWorkflows.find((w: any) => String(w.id) === localId) : undefined;
-            if (matchById) {
-              if (matchById.isArchived) {
-                archivedWorkflowsToUnarchive.add(matchById.id);
+            const resolution = resolveRemoteWorkflow(
+              { localPath: relPath, code, name, localId },
+              remoteWorkflows,
+              repoRoot,
+              syncState,
+              localDir
+            );
+
+            if (resolution.remoteWorkflow) {
+              const matchedWf = resolution.remoteWorkflow;
+              if (matchedWf.isArchived) {
+                archivedWorkflowsToUnarchive.add(matchedWf.id);
               }
-              output.log(`Detected existing remote workflow matching ID ${localId} for '${relPath}'. Re-attaching to sync state.`);
+              
+              let targetWfId = String(matchedWf.id);
+              if (localId && String(matchedWf.id) !== localId && pgClient) {
+                try {
+                  const rekeyed = await rekeyRemoteWorkflowId(pgClient, String(matchedWf.id), localId);
+                  if (rekeyed) {
+                    output.log(`[REKEY] Rekeyed remote workflow ID '${matchedWf.id}' -> '${localId}' in database for '${relPath}' to match declared ID.`);
+                    targetWfId = localId;
+                  }
+                } catch (rekeyErr) {
+                  output.warn(`Failed to rekey workflow ID in database: ${rekeyErr instanceof Error ? rekeyErr.message : String(rekeyErr)}`);
+                }
+              }
+
+              output.log(`Detected existing remote workflow (${resolution.matchReason} match: ${targetWfId}) for '${relPath}'. Re-attaching to sync state.`);
               newPaths.splice(newPaths.indexOf(relPath), 1);
               modifiedPaths.push(relPath);
-              
+
               // Seed syncState so modified handler updates it
               syncState.workflows[relPath] = {
-                id: localId,
+                id: targetWfId,
                 name: name,
                 localPath: relPath,
                 contentHash: '', // Force update check
-                remoteUpdatedAt: matchById.updatedAt || new Date(0).toISOString(),
-                folderId: matchById.parentFolderId || matchById.folderId || undefined,
+                remoteUpdatedAt: matchedWf.updatedAt || new Date(0).toISOString(),
+                folderId: matchedWf.parentFolderId || matchedWf.folderId || undefined,
               };
+              saveWorkflowCache(repoRoot, targetWfId, code, localDir);
               continue;
             }
+          }
 
-            // Scenario B: A remote workflow has the same name but a different ID.
-            // (This is a collision that will result in a duplicate workflow)
-            const matchByName = remoteWorkflows.find((w: any) => w.name === name && !w.isArchived);
-            if (matchByName) {
-              const remoteId = matchByName.id;
-              if (!options.force) {
-                throw new Error(
-                  `Conflict: A workflow named "${name}" already exists on remote with ID "${remoteId}", but local code has ID "${localId || '(none)'}". ` +
-                  `Pushing would create a duplicate. Please align the ID in your local file to match the remote workflow, or use --force to override.`
-                );
-              } else {
-                output.warn(`Warning: A workflow named "${name}" already exists on remote with ID "${remoteId}". --force is enabled, creating a duplicate.`);
+          // Handle --prune if requested
+          if (options.prune && pgClient) {
+            try {
+              const canonicalList = Object.values(syncState.workflows);
+              const pruneRes = await purgeOrphanedRemoteWorkflows(pgClient, canonicalList, remoteWorkflows);
+              if (pruneRes.prunedCount > 0) {
+                output.log(`[PRUNE] Purged ${pruneRes.prunedCount} orphaned remote duplicate workflow(s) from database: ${pruneRes.prunedIds.join(', ')}`);
               }
+            } catch (err) {
+              output.error(`Failed to prune orphaned workflows: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
 
@@ -999,26 +1016,21 @@ export function pushCommand(program: Command) {
                 }
               }
 
-              // Attempt 3: MCP Tool Fallback
+              // Attempt 3: MCP Tool Fallback (Update only - never call create)
               if (!updatedSuccessfully) {
                 try {
                   await mcp.callTool('unarchive_workflow', { workflowId: entry.id, id: entry.id });
                 } catch (e) {}
 
                 try {
-                  await mcp.callTool('create_workflow_from_code', { code });
+                  await mcp.callTool('update_workflow', {
+                    workflowId: entry.id,
+                    operations: [
+                      { type: 'setWorkflowMetadata', name }
+                    ]
+                  });
                   updatedSuccessfully = true;
-                } catch (e) {
-                  try {
-                    await mcp.callTool('update_workflow', {
-                      workflowId: entry.id,
-                      operations: [
-                        { type: 'setWorkflowMetadata', name }
-                      ]
-                    });
-                    updatedSuccessfully = true;
-                  } catch (e2) {}
-                }
+                } catch (e) {}
               }
 
               if (!updatedSuccessfully) {

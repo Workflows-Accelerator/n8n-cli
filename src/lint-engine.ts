@@ -1041,7 +1041,8 @@ function renameNodeInConnections(connections: any, oldName: string, newName: str
 
 export function fixWorkflowAgainstStandards(
   workflowJson: any,
-  standards: StandardsConfig
+  standards: StandardsConfig,
+  latestVersions?: Record<string, number>
 ): { modifiedJson: any; fixedCount: number } {
   let fixedCount = 0;
   const modifiedJson = JSON.parse(JSON.stringify(workflowJson));
@@ -1076,6 +1077,14 @@ export function fixWorkflowAgainstStandards(
       const nodeId = node.id ? String(node.id) : '';
       const oldName = node.name || '';
       const nodeType = node.type || '';
+
+      if (latestVersions && nodeType && node.typeVersion !== undefined) {
+        const latest = latestVersions[nodeType];
+        if (latest !== undefined && node.typeVersion < latest) {
+          node.typeVersion = latest;
+          fixedCount++;
+        }
+      }
       
       // Determine if default node name (which is tolerated if tolerateDefaultNames is true)
       const typeParts = nodeType.split('.');
@@ -1446,7 +1455,22 @@ export function diagnoseChainParentheses(content: string): string[] {
       warnings.push(`.${open.methodName}() of Node/Branch '${open.nodeName}' at line ${open.line} is not closed.`);
     }
   }
-  
+
+  warnings.push(...diagnoseExprConcatRestrictions(content));
   return warnings;
 }
 
+export function diagnoseExprConcatRestrictions(content: string): string[] {
+  const warnings: string[] = [];
+  const lines = content.split('\n');
+  const exprConcatRegex = /expr\(\s*['"`].*?['"`]\s*\+\s*\(?\s*\$(?:node|\(|\w+)/;
+  const exprConcatReverseRegex = /expr\(\s*\(?\s*\$(?:node|\(|\w+).*?\+\s*['"`]/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineText = lines[i];
+    if (exprConcatRegex.test(lineText) || exprConcatReverseRegex.test(lineText)) {
+      warnings.push(`Line ${i + 1}: TS SDK expr(...) AST Parsing Restriction - Concatenating JS identifiers like '$' outside quotes in expr(...) causes AST parsing errors ("Unknown identifier: '$' is not defined"). Keep expressions strictly inside n8n template braces inside the string literal: expr('SELECT ... {{ $(\\'Node\\').item.json.id }}').`);
+    }
+  }
+  return warnings;
+}

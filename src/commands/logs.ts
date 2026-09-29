@@ -13,6 +13,7 @@ export function logsCommand(program: Command) {
     .description('Fetch and format recent execution logs and failure stack traces for a workflow')
     .option('--limit <n>', 'limit the number of executions returned', (val) => parseInt(val, 10), 10)
     .option('--failed-only', 'filter output to display only failed workflow executions', false)
+    .option('--last-failed', 'fetch and display the most recent failed execution with full stack trace and error payload', false)
     .option('--json', 'output raw JSON format')
     .option('--db-url <url>', 'override n8n PostgreSQL database connection URL')
     .option('--mcp-command <cmd>', 'override MCP server start command')
@@ -41,7 +42,8 @@ export function logsCommand(program: Command) {
           }
         }
 
-        const limit = options.limit || 10;
+        const failedOnly = options.failedOnly || options.lastFailed;
+        const limit = options.lastFailed ? 1 : (options.limit || 10);
         let executions: any[] = [];
 
         if (dbUrl) {
@@ -66,7 +68,7 @@ export function logsCommand(program: Command) {
             params.push(workflowId);
             whereClauses.push(`e."workflowId" = $${params.length}`);
           }
-          if (options.failedOnly) {
+          if (failedOnly) {
             whereClauses.push(`(e.finished = false OR e.status = 'failed' OR e.status = 'crashed' OR e.status = 'error')`);
           }
 

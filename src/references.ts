@@ -7,6 +7,7 @@ import { generateWorkflowCode, parseWorkflowCode } from '@n8n/workflow-sdk';
 import { McpClient, withMcp } from './mcp-client.js';
 import { N8nCliConfig, buildFolderPaths, getWorkflowDetails, loadGlobalConfig, ReferenceSource, fetchWorkflowsPaginated, fetchWorkflowsWithDb } from './config.js';
 import * as output from './output.js';
+import { fileURLToPath } from 'url';
 import { glob } from 'glob';
 import { calculateHash } from './sync-state.js';
 
@@ -675,6 +676,24 @@ async function pullGitRepoReference(
   }
 }
 
+export function getBuiltinExamplesDir(): string | null {
+  try {
+    const currentFile = fileURLToPath(import.meta.url);
+    const currentDir = path.dirname(currentFile);
+    const candidates = [
+      path.join(currentDir, 'templates', 'workflow_examples_ref'),
+      path.join(currentDir, '..', 'templates', 'workflow_examples_ref'),
+      path.join(currentDir, '..', 'n8n', 'references', 'workflow_examples_ref'),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        return cand;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
 export async function pullReferences(
   mcp: McpClient,
   config: N8nCliConfig,
@@ -685,10 +704,15 @@ export async function pullReferences(
   dryRun: boolean = false,
   currentEnv?: string
 ) {
-  const rawReferences = config.references;
+  let rawReferences = config.references;
   if (!rawReferences) {
-    output.debug('No reference sources configured. Skipping reference pull.');
-    return;
+    const builtinDir = getBuiltinExamplesDir();
+    if (builtinDir) {
+      rawReferences = [{ name: 'Workflow Examples Ref', builtin: 'examples' }];
+    } else {
+      output.debug('No reference sources configured. Skipping reference pull.');
+      return;
+    }
   }
 
   const sources: ReferenceSource[] = Array.isArray(rawReferences)
@@ -710,7 +734,7 @@ export async function pullReferences(
   const activeRefPaths = new Set<string>();
   const groupedWorkflows: Record<string, Record<string, ReferenceWorkflowInfo[]>> = {};
 
-  const isLegacySingle = sources.length === 1 && !sources[0].name && !sources[0].path && !sources[0].repository;
+  const isLegacySingle = sources.length === 1 && !sources[0].name && !sources[0].path && !sources[0].repository && !sources[0].builtin;
 
   for (let idx = 0; idx < sources.length; idx++) {
     const source = sources[idx];
@@ -722,7 +746,23 @@ export async function pullReferences(
     }
     const targetDir = subDir ? path.join(referencesDir, subDir) : referencesDir;
 
-    if (source.projectId) {
+    if (source.builtin || source.path === 'builtin:examples') {
+      const builtinDir = getBuiltinExamplesDir();
+      if (builtinDir) {
+        const modifiedSource = { ...source, path: builtinDir };
+        await pullLocalPathReference(
+          repoRoot,
+          modifiedSource,
+          targetDir,
+          subDir,
+          activeRefPaths,
+          sourceWorkflows,
+          dryRun
+        );
+      } else {
+        output.warn('Built-in workflow reference templates directory not found.');
+      }
+    } else if (source.projectId) {
       await pullRemoteN8nReference(
         mcp,
         config,
@@ -762,7 +802,7 @@ export async function pullReferences(
     }
 
     if (sourceWorkflows.length > 0) {
-      const envKey = source.env || (source.projectId ? (currentEnv || 'development') : (source.repository ? 'Git' : 'Local'));
+      const envKey = source.env || (source.projectId ? (currentEnv || 'development') : (source.repository ? 'Git' : (source.builtin ? 'Builtin' : 'Local')));
       const sourceName = source.name || source.projectName || (source.path ? path.basename(source.path) : '') || (source.repository ? getRepoName(source.repository) : '') || `source_${idx + 1}`;
       
       if (!groupedWorkflows[envKey]) {
