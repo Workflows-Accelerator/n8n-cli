@@ -20,9 +20,17 @@ function askQuestion(query: string, defaultValue = ''): Promise<string> {
   });
 }
 
-async function testRestApi(instanceUrl: string, apiKey: string): Promise<{ success: boolean; message: string }> {
-  if (!instanceUrl) return { success: false, message: 'Instance URL not configured' };
-  if (!apiKey) return { success: false, message: 'REST API key not configured' };
+export type SubsystemTestStatus = 'SUCCESS' | 'FAILURE' | 'SKIPPED';
+
+export interface TestResult {
+  success: boolean;
+  status: SubsystemTestStatus;
+  message: string;
+}
+
+export async function testRestApi(instanceUrl: string, apiKey: string): Promise<TestResult> {
+  if (!instanceUrl) return { success: false, status: 'FAILURE', message: 'Instance URL not configured' };
+  if (!apiKey) return { success: false, status: 'SKIPPED', message: 'Not configured (optional)' };
 
   const cleanUrl = instanceUrl.replace(/\/$/, '');
   try {
@@ -34,32 +42,32 @@ async function testRestApi(instanceUrl: string, apiKey: string): Promise<{ succe
     });
     clearTimeout(timeoutId);
     if (res.ok) {
-      return { success: true, message: 'Connected successfully' };
+      return { success: true, status: 'SUCCESS', message: 'Connected successfully' };
     } else {
-      return { success: false, message: `Status ${res.status} (${res.statusText})` };
+      return { success: false, status: 'FAILURE', message: `Status ${res.status} (${res.statusText})` };
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { success: false, message: msg.includes('aborted') ? 'Connection timed out (5s)' : msg };
+    return { success: false, status: 'FAILURE', message: msg.includes('aborted') ? 'Connection timed out (5s)' : msg };
   }
 }
 
-async function testMcp(mcpCommand: string, accessToken: string, instanceUrl: string): Promise<{ success: boolean; message: string }> {
-  if (!accessToken) return { success: false, message: 'Access token not configured' };
+export async function testMcp(mcpCommand: string, accessToken: string, instanceUrl: string): Promise<TestResult> {
+  if (!accessToken) return { success: false, status: 'FAILURE', message: 'Access token not configured' };
 
   try {
     // Attempt connecting via MCP and executing search_projects
     await withMcp(mcpCommand, accessToken, async (mcp) => {
       await mcp.callToolAndGetJson('search_projects', { limit: 1 });
     }, instanceUrl);
-    return { success: true, message: 'Connected successfully' };
+    return { success: true, status: 'SUCCESS', message: 'Connected successfully' };
   } catch (err) {
-    return { success: false, message: err instanceof Error ? err.message : String(err) };
+    return { success: false, status: 'FAILURE', message: err instanceof Error ? err.message : String(err) };
   }
 }
 
-async function testDatabase(dbUrl: string): Promise<{ success: boolean; message: string }> {
-  if (!dbUrl) return { success: false, message: 'Database URL not configured' };
+export async function testDatabase(dbUrl: string): Promise<TestResult> {
+  if (!dbUrl) return { success: false, status: 'SKIPPED', message: 'Not configured (optional)' };
 
   const pgClient = pg as any;
   const ClientClass = pgClient.Client || pgClient.default?.Client || pgClient;
@@ -72,15 +80,17 @@ async function testDatabase(dbUrl: string): Promise<{ success: boolean; message:
   try {
     await client.connect();
     await client.query('SELECT 1;');
-    return { success: true, message: 'Connected successfully' };
+    return { success: true, status: 'SUCCESS', message: 'Connected successfully' };
   } catch (err) {
-    return { success: false, message: err instanceof Error ? err.message : String(err) };
+    return { success: false, status: 'FAILURE', message: err instanceof Error ? err.message : String(err) };
   } finally {
     try {
       await client.end();
     } catch (e) {}
   }
 }
+
+export const testPg = testDatabase;
 
 async function listEnvironments() {
   const globalConfig = loadGlobalConfig();
@@ -190,7 +200,7 @@ export function environmentsCommand(program: Command) {
           rows.push([
             envName,
             'REST API',
-            apiRes.success ? 'SUCCESS' : 'FAILURE',
+            apiRes.status,
             apiRes.message
           ]);
 
@@ -199,7 +209,7 @@ export function environmentsCommand(program: Command) {
           rows.push([
             envName,
             'MCP Server',
-            mcpRes.success ? 'SUCCESS' : 'FAILURE',
+            mcpRes.status,
             mcpRes.message
           ]);
 
@@ -208,7 +218,7 @@ export function environmentsCommand(program: Command) {
           rows.push([
             envName,
             'Database',
-            dbRes.success ? 'SUCCESS' : 'FAILURE',
+            dbRes.status,
             dbRes.message
           ]);
         }
@@ -254,10 +264,10 @@ export function environmentsCommand(program: Command) {
 
           output.log(`\nConfiguring environment '${name}' interactively...`);
           url = await askQuestion('Instance URL', existingEnv.instanceUrl || 'http://localhost:5678');
-          mcpCommand = await askQuestion('MCP Command Override', existingEnv.mcpCommand || 'npx -y n8n-mcp');
+          mcpCommand = existingEnv.mcpCommand || 'npx -y n8n-mcp';
           accessToken = await askQuestion('MCP Access Token', existingEnv.accessToken || '');
-          apiKey = await askQuestion('REST API Key', existingEnv.apiKey || '');
-          dbUrl = await askQuestion('PostgreSQL Database URL', existingEnv.dbUrl || '');
+          apiKey = await askQuestion('REST API Key (optional - press Enter to skip)', existingEnv.apiKey || '');
+          dbUrl = await askQuestion('PostgreSQL Database URL (optional - press Enter to skip)', existingEnv.dbUrl || '');
         }
 
         const updates: any = {};
