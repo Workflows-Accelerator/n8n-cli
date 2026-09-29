@@ -151,12 +151,20 @@ async function temporarilyEnableMcp(
   folderCache: Record<string, string | null> = {},
   dbUrl?: string
 ): Promise<Record<string, boolean>> {
+  if (!apiKey) return {};
+
   const headers = {
     'X-N8N-API-KEY': apiKey,
     'Content-Type': 'application/json',
   };
   
-  const workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, headers);
+  let workflows: any[] = [];
+  try {
+    workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, headers);
+  } catch (err) {
+    output.warn(`REST API workflow listing failed: ${err instanceof Error ? err.message : String(err)}. Continuing with direct MCP discovery.`);
+    return {};
+  }
 
   const restoreMcpCache: Record<string, boolean> = {};
   for (const w of workflows) {
@@ -379,7 +387,7 @@ export function pullCommand(program: Command) {
             }
 
             // 1. Temporarily enable MCP for the main project
-            if (apiKey || dbUrl) {
+            if (apiKey) {
               mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache, dbUrl);
             }
 

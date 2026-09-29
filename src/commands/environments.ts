@@ -34,11 +34,6 @@ function createPrompter() {
   };
 }
 
-function askQuestion(query: string, defaultValue = ''): Promise<string> {
-  const prompter = createPrompter();
-  return prompter.ask(query, defaultValue).finally(() => prompter.close());
-}
-
 export type SubsystemTestStatus = 'SUCCESS' | 'FAILURE' | 'SKIPPED';
 
 export interface TestResult {

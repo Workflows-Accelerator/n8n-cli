@@ -156,12 +156,20 @@ export async function temporarilyEnableMcp(
   folderCache: Record<string, string | null> = {},
   dbUrl?: string
 ): Promise<Record<string, boolean>> {
+  if (!apiKey) return {};
+
   const headers = {
     'X-N8N-API-KEY': apiKey,
     'Content-Type': 'application/json',
   };
   
-  const workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, headers);
+  let workflows: any[] = [];
+  try {
+    workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, headers);
+  } catch (err) {
+    output.warn(`REST API workflow listing failed: ${err instanceof Error ? err.message : String(err)}. Continuing with direct MCP discovery.`);
+    return {};
+  }
 
   const restoreMcpCache: Record<string, boolean> = {};
   for (const w of workflows) {
@@ -388,7 +396,7 @@ async function pullRemoteN8nReference(
 
   if (!isIndependentRefEnv) {
     const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
-    const canManageMcp = Boolean(apiKey || dbUrl);
+    const canManageMcp = Boolean(apiKey);
     const needsMcpEnabling = canManageMcp && ((refProjId !== config.projectId) || (refFolderId !== config.folderId));
     let refMcpCache: Record<string, boolean> = {};
     let refFolderPaths: Record<string, string> = {};
@@ -453,7 +461,7 @@ async function pullRemoteN8nReference(
     await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
       let refMcpCache: Record<string, boolean> = {};
       let refFolderPaths: Record<string, string> = {};
-      const canManageRefMcp = Boolean(refApiKey || refDbUrl);
+      const canManageRefMcp = Boolean(refApiKey);
       try {
         if (canManageRefMcp) {
           try {
