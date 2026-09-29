@@ -310,7 +310,7 @@ async function pullRemoteN8nReference(
       });
 
       const workflows = Array.isArray(response) ? response : (response.data || response.workflows || []);
-      const availableWorkflows = workflows.filter((w: any) => w.availableInMCP === true);
+      const availableWorkflows = workflows.filter((w: any) => w.availableInMCP !== false);
       
       const sanitizeFilename = (name: string) => name.replace(/[\\/:*?"<>|]/g, '_');
 
@@ -387,7 +387,9 @@ async function pullRemoteN8nReference(
   };
 
   if (!isIndependentRefEnv) {
-    const needsMcpEnabling = (refProjId !== config.projectId) || (refFolderId !== config.folderId);
+    const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
+    const canManageMcp = Boolean(apiKey || dbUrl);
+    const needsMcpEnabling = canManageMcp && ((refProjId !== config.projectId) || (refFolderId !== config.folderId));
     let refMcpCache: Record<string, boolean> = {};
     let refFolderPaths: Record<string, string> = {};
 
@@ -398,17 +400,14 @@ async function pullRemoteN8nReference(
           const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
           refFolderPaths = buildFolderPaths(folders, refFolderId);
         } catch (e) {}
-        const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
         refMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, refProjId, refFolderId, refFolderPaths, folderCache, dbUrl);
       }
 
-      const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
       await doPull(mcp, instanceUrl, apiKey, dbUrl, folderCache);
     } finally {
-      if (needsMcpEnabling) {
+      if (needsMcpEnabling && Object.keys(refMcpCache).length > 0) {
         output.log(`Restoring MCP access settings for reference project '${source.projectName || refProjId}'...`);
         try {
-          const dbUrl = process.env.N8N_DB_URL || loadGlobalConfig().environments?.[currentEnv || 'development']?.dbUrl || '';
           await restoreMcpSettings(mcp, instanceUrl, apiKey, refProjId, refMcpCache, refFolderId, refFolderPaths, dbUrl);
         } catch (err) {
           output.error(`Failed to restore references project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
@@ -454,20 +453,25 @@ async function pullRemoteN8nReference(
     await withMcp(refMcpCommand, refAccessToken, async (refMcp) => {
       let refMcpCache: Record<string, boolean> = {};
       let refFolderPaths: Record<string, string> = {};
+      const canManageRefMcp = Boolean(refApiKey || refDbUrl);
       try {
-        try {
-          const foldersResponse = await refMcp.callToolAndGetJson('search_folders', { projectId: refProjId });
-          const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
-          refFolderPaths = buildFolderPaths(folders, refFolderId);
-        } catch (e) {}
-        refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, refFolderCache, refDbUrl);
+        if (canManageRefMcp) {
+          try {
+            const foldersResponse = await refMcp.callToolAndGetJson('search_folders', { projectId: refProjId });
+            const folders = Array.isArray(foldersResponse) ? foldersResponse : (foldersResponse.folders || foldersResponse.data || []);
+            refFolderPaths = buildFolderPaths(folders, refFolderId);
+          } catch (e) {}
+          refMcpCache = await temporarilyEnableMcp(refMcp, refInstanceUrl, refApiKey, refProjId, refFolderId, refFolderPaths, refFolderCache, refDbUrl);
+        }
         await doPull(refMcp, refInstanceUrl, refApiKey, refDbUrl, refFolderCache);
       } finally {
-        output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
-        try {
-          await restoreMcpSettings(refMcp, refInstanceUrl, refApiKey, refProjId, refMcpCache, refFolderId, refFolderPaths, refDbUrl);
-        } catch (err) {
-          output.error(`Failed to restore references project MCP settings on environment '${refEnv}': ${err instanceof Error ? err.message : String(err)}`);
+        if (canManageRefMcp && Object.keys(refMcpCache).length > 0) {
+          output.log(`Restoring MCP access settings for reference project on environment '${refEnv}'...`);
+          try {
+            await restoreMcpSettings(refMcp, refInstanceUrl, refApiKey, refProjId, refMcpCache, refFolderId, refFolderPaths, refDbUrl);
+          } catch (err) {
+            output.error(`Failed to restore references project MCP settings on environment '${refEnv}': ${err instanceof Error ? err.message : String(err)}`);
+          }
         }
       }
     }, refInstanceUrl);

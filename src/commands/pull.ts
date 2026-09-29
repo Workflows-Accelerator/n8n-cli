@@ -328,10 +328,6 @@ export function pullCommand(program: Command) {
           output.log('Tip: You can set a global database connection URL using: n8ncli init --db-url="postgresql://user:pass@host/db"');
         }
 
-        if (!apiKey) {
-          throw new Error('N8N_API_KEY is not defined in the environment or global configuration. It is required to manage MCP settings on your n8n instance.');
-        }
-
         output.log(`Pulling workflows for project '${config.projectName}'...`);
 
         const syncState = loadSyncState(repoRoot, localDir);
@@ -347,10 +343,12 @@ export function pullCommand(program: Command) {
           let folderPaths: Record<string, string> = {};
           
           const sigHandler = async () => {
-            output.log('\nProcess interrupted. Restoring MCP settings...');
-            try {
-              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
-            } catch (e) {}
+            if (Object.keys(mainMcpCache).length > 0) {
+              output.log('\nProcess interrupted. Restoring MCP settings...');
+              try {
+                await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
+              } catch (e) {}
+            }
             process.exit(1);
           };
           process.on('SIGINT', sigHandler);
@@ -381,7 +379,9 @@ export function pullCommand(program: Command) {
             }
 
             // 1. Temporarily enable MCP for the main project
-            mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache, dbUrl);
+            if (apiKey || dbUrl) {
+              mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache, dbUrl);
+            }
 
             // 3. Fetch remote workflows list
             const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
@@ -390,7 +390,7 @@ export function pullCommand(program: Command) {
             });
 
             const workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
-            const availableWorkflows = workflows.filter((w: any) => w.availableInMCP === true);
+            const availableWorkflows = workflows.filter((w: any) => w.availableInMCP !== false);
             
             // Fetch remote details of all workflows and filter by folder configured
             const targetWorkflows = [];
@@ -701,11 +701,13 @@ export function pullCommand(program: Command) {
             process.off('SIGINT', sigHandler);
             process.off('SIGTERM', sigHandler);
 
-            output.log('Restoring MCP access settings for the project(s)...');
-            try {
-              await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
-            } catch (err) {
-              output.error(`Failed to restore main project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
+            if (Object.keys(mainMcpCache).length > 0) {
+              output.log('Restoring MCP access settings for the project(s)...');
+              try {
+                await restoreMcpSettings(mcp, instanceUrl, apiKey, projectId, mainMcpCache, folderId, folderPaths, dbUrl);
+              } catch (err) {
+                output.error(`Failed to restore main project MCP settings: ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
           }
         });
