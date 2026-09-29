@@ -6,18 +6,37 @@ import { loadGlobalConfig, saveGlobalConfig, getGlobalConfigPath } from '../conf
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 
-function askQuestion(query: string, defaultValue = ''): Promise<string> {
+function createPrompter() {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout
   });
-  const prompt = defaultValue ? `${query} [${defaultValue}]: ` : `${query}: `;
-  return new Promise(resolve => {
-    rl.question(prompt, (answer) => {
+  const it = rl[Symbol.asyncIterator]();
+  return {
+    async ask(query: string, defaultValue = ''): Promise<string> {
+      const prompt = defaultValue ? `${query} [${defaultValue}]: ` : `${query}: `;
+      if (process.stdin.isTTY) {
+        return new Promise(resolve => {
+          rl.question(prompt, (answer) => {
+            resolve(answer.trim() || defaultValue);
+          });
+        });
+      } else {
+        process.stdout.write(prompt);
+        const res = await it.next();
+        const line = res.done ? '' : (res.value || '');
+        return line.trim() || defaultValue;
+      }
+    },
+    close() {
       rl.close();
-      resolve(answer.trim() || defaultValue);
-    });
-  });
+    }
+  };
+}
+
+function askQuestion(query: string, defaultValue = ''): Promise<string> {
+  const prompter = createPrompter();
+  return prompter.ask(query, defaultValue).finally(() => prompter.close());
 }
 
 export type SubsystemTestStatus = 'SUCCESS' | 'FAILURE' | 'SKIPPED';
@@ -263,11 +282,16 @@ export function environmentsCommand(program: Command) {
           const existingEnv = globalConfig.environments?.[name] || {};
 
           output.log(`\nConfiguring environment '${name}' interactively...`);
-          url = await askQuestion('Instance URL', existingEnv.instanceUrl || 'http://localhost:5678');
-          mcpCommand = existingEnv.mcpCommand || 'npx -y n8n-mcp';
-          accessToken = await askQuestion('MCP Access Token', existingEnv.accessToken || '');
-          apiKey = await askQuestion('REST API Key (optional - press Enter to skip)', existingEnv.apiKey || '');
-          dbUrl = await askQuestion('PostgreSQL Database URL (optional - press Enter to skip)', existingEnv.dbUrl || '');
+          const prompter = createPrompter();
+          try {
+            url = await prompter.ask('Instance URL', existingEnv.instanceUrl || 'http://localhost:5678');
+            mcpCommand = existingEnv.mcpCommand || 'npx -y n8n-mcp';
+            accessToken = await prompter.ask('MCP Access Token', existingEnv.accessToken || '');
+            apiKey = await prompter.ask('REST API Key (optional - press Enter to skip)', existingEnv.apiKey || '');
+            dbUrl = await prompter.ask('PostgreSQL Database URL (optional - press Enter to skip)', existingEnv.dbUrl || '');
+          } finally {
+            prompter.close();
+          }
         }
 
         const updates: any = {};
