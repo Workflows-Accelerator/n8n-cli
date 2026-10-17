@@ -110,21 +110,37 @@ export class McpClient {
       sanitizedArgs.limit = 200;
     }
 
-    const result = await this.client.callTool({
-      name,
-      arguments: sanitizedArgs,
-    });
+    const maxRetries = 6;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await this.client.callTool({
+          name,
+          arguments: sanitizedArgs,
+        });
 
-    if (result.isError) {
-      const content = result.content as any;
-      const text = content
-        ?.filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text)
-        .join('\n');
-      throw new Error(text || `Tool execution '${name}' failed with an unknown error.`);
+        if (result.isError) {
+          const content = result.content as any;
+          const text = content
+            ?.filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+            .join('\n');
+          if (text && (text.includes('Too many requests') || text.includes('429')) && attempt < maxRetries) {
+            await new Promise(r => setTimeout(r, attempt * 4000));
+            continue;
+          }
+          throw new Error(text || `Tool execution '${name}' failed with an unknown error.`);
+        }
+
+        return result;
+      } catch (err: any) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        if ((errMsg.includes('Too many requests') || errMsg.includes('429')) && attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, attempt * 4000));
+          continue;
+        }
+        throw err;
+      }
     }
-
-    return result;
   }
 
   /**

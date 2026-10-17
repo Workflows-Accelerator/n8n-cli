@@ -853,6 +853,7 @@ export function pushCommand(program: Command) {
               };
               saveWorkflowCache(repoRoot, newId, code, localDir);
               output.log(`  [CREATED] ${relPath} (ID: ${newId})`);
+              await new Promise(r => setTimeout(r, 1200));
             } catch (err) {
               output.error(`Failed to create workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
             }

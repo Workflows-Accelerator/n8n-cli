@@ -188,7 +188,12 @@ async function temporarilyEnableMcp(
           try {
             await enableMcpForWorkflow(mcp, instanceUrl, apiKey, w, true, dbUrl);
           } catch (e) {
-            output.error(`Failed to enable MCP for workflow '${w.name}': ${e instanceof Error ? e.message : String(e)}`);
+            const msg = e instanceof Error ? e.message : String(e);
+            output.error(`Failed to enable MCP for workflow '${w.name}': ${msg}`);
+            if (msg.includes('must NOT have additional properties') || msg.includes('Tool update_workflow not found') || msg.includes('Too many requests')) {
+              output.warn(`Instance does not support programmatically toggling availableInMCP. Skipping further MCP enable attempts.`);
+              break;
+            }
           }
         }
       } else {
@@ -209,7 +214,12 @@ async function temporarilyEnableMcp(
             restoreMcpCache[w.id] = false;
           }
         } catch (err) {
-          output.error(`Failed to resolve scope for workflow '${w.name}': ${err instanceof Error ? err.message : String(err)}`);
+          const msg = err instanceof Error ? err.message : String(err);
+          output.error(`Failed to resolve scope for workflow '${w.name}': ${msg}`);
+          if (msg.includes('must NOT have additional properties') || msg.includes('Tool update_workflow not found') || msg.includes('Too many requests')) {
+            output.warn(`Instance does not support programmatically toggling availableInMCP. Skipping further MCP enable attempts.`);
+            break;
+          }
         }
       }
     }
@@ -347,7 +357,7 @@ export function pullCommand(program: Command) {
         let skippedCount = 0;
         let hasConflicts = false;
 
-        await withMcp(mcpCommand, accessToken, async (mcp) => {
+        const executePull = async (mcp: any) => {
           let folderPaths: Record<string, string> = {};
           
           const sigHandler = async () => {
@@ -387,23 +397,36 @@ export function pullCommand(program: Command) {
             }
 
             // 1. Temporarily enable MCP for the main project
-            if (apiKey) {
+            if (apiKey && !mcp.isDummy) {
               mainMcpCache = await temporarilyEnableMcp(mcp, instanceUrl, apiKey, projectId, folderId, folderPaths, folderCache, dbUrl);
             }
 
             // 3. Fetch remote workflows list
             let workflows: any[] = [];
-            try {
-              workflows = await fetchAllRemoteWorkflows(mcp, { projectId });
-            } catch (err) {
-              const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
-                projectId,
-                limit: 200,
-              });
-              workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
+            if (apiKey && instanceUrl) {
+              try {
+                workflows = await fetchWorkflowsPaginated(instanceUrl, projectId, {
+                  'X-N8N-API-KEY': apiKey,
+                  'Content-Type': 'application/json',
+                });
+              } catch (err) {
+                output.warn(`REST API workflow listing failed: ${err instanceof Error ? err.message : String(err)}. Falling back to MCP.`);
+              }
             }
 
-            const availableWorkflows = workflows.filter((w: any) => w.availableInMCP !== false);
+            if (workflows.length === 0) {
+              try {
+                workflows = await fetchAllRemoteWorkflows(mcp, { projectId });
+              } catch (err) {
+                const searchResponse = await mcp.callToolAndGetJson('search_workflows', {
+                  projectId,
+                  limit: 200,
+                });
+                workflows = Array.isArray(searchResponse) ? searchResponse : (searchResponse.data || searchResponse.workflows || []);
+              }
+            }
+
+            const availableWorkflows = apiKey ? workflows : workflows.filter((w: any) => w.availableInMCP !== false);
             
             // Fetch remote details of all workflows and filter by folder configured
             const targetWorkflows = [];
@@ -707,7 +730,7 @@ export function pullCommand(program: Command) {
             }
 
             // Pull references
-            if (!options.skipReferences) {
+            if (!options.skipReferences && !mcp.isDummy) {
               await pullReferences(mcp, config, repoRoot!, folderCache, instanceUrl, apiKey, options.dryRun, envKey);
             }
           } finally {
@@ -723,7 +746,25 @@ export function pullCommand(program: Command) {
               }
             }
           }
-        });
+        };
+
+        try {
+          await withMcp(mcpCommand, accessToken, async (mcp) => {
+            await executePull(mcp);
+          });
+        } catch (mcpErr) {
+          if (apiKey && instanceUrl) {
+            output.warn(`MCP connection unavailable (${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}). Proceeding via REST API.`);
+            const dummyMcp = {
+              isDummy: true,
+              callToolAndGetJson: async () => { throw new Error('MCP unavailable'); },
+              callTool: async () => { throw new Error('MCP unavailable'); },
+            };
+            await executePull(dummyMcp);
+          } else {
+            throw mcpErr;
+          }
+        }
 
         // Sync credentials with database and check for unconfigured ones
         if (dbUrl) {
