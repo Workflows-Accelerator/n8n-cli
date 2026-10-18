@@ -81,7 +81,7 @@ export function foldersCommand(program: Command) {
             limit: options.limit,
           });
 
-          const foldersList = Array.isArray(response) ? response : (response.folders || []);
+          const foldersList = Array.isArray(response) ? response : (response.folders || response.data || []);
 
           // Build folder node map
           const folderMap = new Map<string, FolderNode>();
