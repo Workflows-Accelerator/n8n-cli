@@ -588,6 +588,272 @@ export async function purgeOrphanedRemoteWorkflows(
   return { prunedCount: orphanedIds.length, prunedIds: orphanedIds };
 }
 
+export function chunkOperations<T>(operations: T[], maxBatchSize: number = 100): T[][] {
+  if (!operations || operations.length === 0) return [];
+  const batches: T[][] = [];
+  for (let i = 0; i < operations.length; i += maxBatchSize) {
+    batches.push(operations.slice(i, i + maxBatchSize));
+  }
+  return batches;
+}
+
+interface NormalizedConnection {
+  source: string;
+  target: string;
+  sourceIndex: number;
+  targetIndex: number;
+  connectionType: string;
+}
+
+function extractConnections(connectionsObj: any): NormalizedConnection[] {
+  const result: NormalizedConnection[] = [];
+  if (!connectionsObj || typeof connectionsObj !== 'object') return result;
+  for (const [source, connTypes] of Object.entries(connectionsObj)) {
+    if (!connTypes || typeof connTypes !== 'object') continue;
+    for (const [connType, outputArray] of Object.entries(connTypes as Record<string, any>)) {
+      if (!Array.isArray(outputArray)) continue;
+      outputArray.forEach((targets: any, sourceIndex: number) => {
+        if (!Array.isArray(targets)) return;
+        for (const targetItem of targets) {
+          if (!targetItem || !targetItem.node) continue;
+          result.push({
+            source,
+            target: targetItem.node,
+            sourceIndex,
+            targetIndex: typeof targetItem.index === 'number' ? targetItem.index : 0,
+            connectionType: connType || targetItem.type || 'main',
+          });
+        }
+      });
+    }
+  }
+  return result;
+}
+
+export function generateWorkflowUpdateOperations(localWf: any, remoteWf?: any): any[] {
+  const operations: any[] = [];
+  if (!localWf) return operations;
+
+  const remote = remoteWf || { nodes: [], connections: {}, settings: {} };
+
+  // 1. Connection diffing
+  const localConns = extractConnections(localWf.connections);
+  const remoteConns = extractConnections(remote.connections);
+
+  const connKey = (c: NormalizedConnection) =>
+    `${c.source}::${c.sourceIndex}::${c.connectionType}::${c.target}::${c.targetIndex}`;
+
+  const localConnKeySet = new Set(localConns.map(connKey));
+  const remoteConnKeySet = new Set(remoteConns.map(connKey));
+
+  const connsToRemove = remoteConns.filter(rc => !localConnKeySet.has(connKey(rc)));
+  const connsToAdd = localConns.filter(lc => !remoteConnKeySet.has(connKey(lc)));
+
+  // Remove connections first (before nodes are removed)
+  for (const rc of connsToRemove) {
+    operations.push({
+      type: 'removeConnection',
+      source: rc.source,
+      target: rc.target,
+      sourceIndex: rc.sourceIndex,
+      targetIndex: rc.targetIndex,
+      connectionType: rc.connectionType,
+    });
+  }
+
+  // 2. Node diffing
+  const localNodes: any[] = localWf.nodes || [];
+  const remoteNodes: any[] = remote.nodes || [];
+
+  const localNodesMap = new Map<string, any>(localNodes.map(n => [n.name, n]));
+  const remoteNodesMap = new Map<string, any>(remoteNodes.map(n => [n.name, n]));
+
+  // Nodes to remove
+  for (const rn of remoteNodes) {
+    if (!localNodesMap.has(rn.name)) {
+      operations.push({
+        type: 'removeNode',
+        nodeName: rn.name,
+      });
+    }
+  }
+
+  // Nodes to add
+  for (const ln of localNodes) {
+    if (!remoteNodesMap.has(ln.name)) {
+      const nodePayload: any = {
+        name: ln.name,
+        type: ln.type,
+        typeVersion: typeof ln.typeVersion === 'number' ? ln.typeVersion : 1,
+      };
+      if (ln.parameters && Object.keys(ln.parameters).length > 0) {
+        nodePayload.parameters = ln.parameters;
+      }
+      if (Array.isArray(ln.position) && ln.position.length === 2) {
+        nodePayload.position = [ln.position[0], ln.position[1]];
+      }
+      if (ln.credentials && Object.keys(ln.credentials).length > 0) {
+        nodePayload.credentials = ln.credentials;
+      }
+      if (typeof ln.disabled === 'boolean') {
+        nodePayload.disabled = ln.disabled;
+      }
+      if (ln.notes !== undefined && ln.notes !== null) {
+        nodePayload.notes = ln.notes;
+      }
+      operations.push({
+        type: 'addNode',
+        node: nodePayload,
+      });
+    }
+  }
+
+  // Nodes to update (present in both)
+  for (const ln of localNodes) {
+    const rn = remoteNodesMap.get(ln.name);
+    if (!rn) continue;
+
+    // Parameters
+    const localParamsStr = JSON.stringify(ln.parameters || {});
+    const remoteParamsStr = JSON.stringify(rn.parameters || {});
+    if (localParamsStr !== remoteParamsStr) {
+      operations.push({
+        type: 'updateNodeParameters',
+        nodeName: ln.name,
+        parameters: ln.parameters || {},
+        replace: true,
+      });
+    }
+
+    // Position
+    if (
+      Array.isArray(ln.position) &&
+      ln.position.length === 2 &&
+      (!Array.isArray(rn.position) ||
+        ln.position[0] !== rn.position[0] ||
+        ln.position[1] !== rn.position[1])
+    ) {
+      operations.push({
+        type: 'setNodePosition',
+        nodeName: ln.name,
+        position: [ln.position[0], ln.position[1]],
+      });
+    }
+
+    // Disabled
+    if (Boolean(ln.disabled) !== Boolean(rn.disabled)) {
+      operations.push({
+        type: 'setNodeDisabled',
+        nodeName: ln.name,
+        disabled: Boolean(ln.disabled),
+      });
+    }
+
+    // Node settings
+    if (ln.settings || rn.settings) {
+      const localSettingsStr = JSON.stringify(ln.settings || {});
+      const remoteSettingsStr = JSON.stringify(rn.settings || {});
+      if (localSettingsStr !== remoteSettingsStr && ln.settings) {
+        operations.push({
+          type: 'setNodeSettings',
+          nodeName: ln.name,
+          settings: ln.settings,
+        });
+      }
+    }
+
+    // Credentials
+    if (ln.credentials && typeof ln.credentials === 'object') {
+      const remoteCreds = rn.credentials || {};
+      for (const [credKey, credVal] of Object.entries(ln.credentials as Record<string, any>)) {
+        if (!credVal) continue;
+        const remoteVal = remoteCreds[credKey];
+        if (!remoteVal || remoteVal.id !== credVal.id || remoteVal.name !== credVal.name) {
+          const op: any = {
+            type: 'setNodeCredential',
+            nodeName: ln.name,
+            credentialKey: credKey,
+          };
+          if (credVal.id) op.credentialId = credVal.id;
+          if (credVal.name) op.credentialName = credVal.name;
+          operations.push(op);
+        }
+      }
+    }
+  }
+
+  // Add new connections (now all target and source nodes exist)
+  for (const lc of connsToAdd) {
+    operations.push({
+      type: 'addConnection',
+      source: lc.source,
+      target: lc.target,
+      sourceIndex: lc.sourceIndex,
+      targetIndex: lc.targetIndex,
+      connectionType: lc.connectionType,
+    });
+  }
+
+  // Workflow metadata (name)
+  if (localWf.name && localWf.name !== remote.name) {
+    operations.push({
+      type: 'setWorkflowMetadata',
+      name: localWf.name,
+    });
+  }
+
+  // Workflow settings
+  const supportedSettingsKeys = [
+    'onError',
+    'retryOnFail',
+    'maxTries',
+    'waitBetweenTries',
+    'alwaysOutputData',
+    'executeOnce',
+    'errorWorkflow',
+    'timezone',
+    'executionOrder',
+    'saveExecutionProgress',
+    'saveManualExecutions',
+    'saveDataErrorExecution',
+    'saveDataSuccessExecution',
+    'executionTimeout',
+    'timeSavedPerExecution',
+    'callerPolicy',
+    'callerIds',
+  ];
+
+  if (localWf.settings && typeof localWf.settings === 'object') {
+    const sanitizedLocalSettings: Record<string, any> = {};
+    for (const key of supportedSettingsKeys) {
+      if (localWf.settings[key] !== undefined) {
+        sanitizedLocalSettings[key] = localWf.settings[key];
+      }
+    }
+    const sanitizedRemoteSettings: Record<string, any> = {};
+    if (remote.settings && typeof remote.settings === 'object') {
+      for (const key of supportedSettingsKeys) {
+        if (remote.settings[key] !== undefined) {
+          sanitizedRemoteSettings[key] = remote.settings[key];
+        }
+      }
+    }
+
+    if (
+      Object.keys(sanitizedLocalSettings).length > 0 &&
+      JSON.stringify(sanitizedLocalSettings) !== JSON.stringify(sanitizedRemoteSettings)
+    ) {
+      operations.push({
+        type: 'setWorkflowSettings',
+        settings: sanitizedLocalSettings,
+      });
+    }
+  }
+
+  return operations;
+}
+
+
 /**
  * Surgically rekeys an existing remote workflow's primary key ID in PostgreSQL database tables
  * to match the declared workflow ID in local code, preventing duplicate remote workflows.

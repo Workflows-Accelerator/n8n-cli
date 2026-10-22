@@ -9,7 +9,7 @@ dist/
 *.tsbuildinfo
 
 # n8ncli ignored files
-n8n/
-scratch/
+/n8n/
+/scratch/
 
 .worktrees/

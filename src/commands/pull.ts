@@ -373,6 +373,21 @@ export function pullCommand(program: Command) {
           process.on('SIGTERM', sigHandler);
 
           try {
+            // Validate project exists on remote
+            if (!mcp.isDummy && projectId) {
+              try {
+                const projectsResponse = await mcp.callToolAndGetJson('search_projects', {});
+                const projectList = Array.isArray(projectsResponse) ? projectsResponse : (projectsResponse.projects || projectsResponse.data || []);
+                if (projectList.length > 0 && !projectList.some((p: any) => p.id === projectId)) {
+                  throw new Error(`Project with ID '${projectId}' was not found on remote instance.`);
+                }
+              } catch (err) {
+                if (err instanceof Error && err.message.includes('was not found on remote instance')) {
+                  throw err;
+                }
+              }
+            }
+
             // Fetch folders to build path hierarchy and pre-create directories
             try {
               const foldersResponse = await mcp.callToolAndGetJson('search_folders', { projectId });
@@ -472,8 +487,7 @@ export function pullCommand(program: Command) {
                 targetWorkflows.push(...filtered);
                 output.log(`Target filter active: pulling ${targetWorkflows.length} workflow(s) matching '${targetArg}'.`);
               } else {
-                output.warn(`No remote workflows matched target '${targetArg}'.`);
-                return;
+                throw new Error(`No remote workflows matched target '${targetArg}'.`);
               }
             } else {
               output.log(`Found ${targetWorkflows.length} workflows in scope.`);
@@ -748,12 +762,14 @@ export function pullCommand(program: Command) {
           }
         };
 
+        let mcpConnected = false;
         try {
           await withMcp(mcpCommand, accessToken, async (mcp) => {
+            mcpConnected = true;
             await executePull(mcp);
           });
         } catch (mcpErr) {
-          if (apiKey && instanceUrl) {
+          if (!mcpConnected && apiKey && instanceUrl) {
             output.warn(`MCP connection unavailable (${mcpErr instanceof Error ? mcpErr.message : String(mcpErr)}). Proceeding via REST API.`);
             const dummyMcp = {
               isDummy: true,

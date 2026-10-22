@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import readline from 'readline';
 import pg from 'pg';
-import { loadGlobalConfig, saveGlobalConfig, getGlobalConfigPath } from '../config.js';
+import { loadGlobalConfig, saveGlobalConfig, getGlobalConfigPath, validateAndTrimCredential } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 
@@ -290,11 +290,11 @@ export function environmentsCommand(program: Command) {
         }
 
         const updates: any = {};
-        if (url !== undefined) updates.instanceUrl = url;
-        if (mcpCommand !== undefined) updates.mcpCommand = mcpCommand;
-        if (accessToken !== undefined) updates.accessToken = accessToken;
-        if (apiKey !== undefined) updates.apiKey = apiKey;
-        if (dbUrl !== undefined) updates.dbUrl = dbUrl;
+        if (url !== undefined) updates.instanceUrl = typeof url === 'string' ? url.trim() : url;
+        if (mcpCommand !== undefined) updates.mcpCommand = typeof mcpCommand === 'string' ? mcpCommand.trim() : mcpCommand;
+        if (accessToken !== undefined) updates.accessToken = validateAndTrimCredential(accessToken, 'MCP Access Token');
+        if (apiKey !== undefined) updates.apiKey = validateAndTrimCredential(apiKey, 'REST API Key');
+        if (dbUrl !== undefined) updates.dbUrl = typeof dbUrl === 'string' ? dbUrl.trim() : dbUrl;
 
         saveGlobalConfig(updates, name);
         output.log(`\nSuccessfully updated environment '${name}' configuration in ~/.n8ncli-global.json`);

@@ -273,6 +273,19 @@ export function saveDefaultLayoutSettings(repoRoot: string) {
 }
 
 
+/**
+ * Trims whitespace and validates credentials against invalid characters (newlines and control characters)
+ * that would cause HTTP header validation failures.
+ */
+export function validateAndTrimCredential(val?: string, fieldName = 'Credential'): string | undefined {
+  if (val === undefined) return undefined;
+  const trimmed = val.trim();
+  if (/[\x00-\x1F\x7F]/.test(trimmed)) {
+    throw new Error(`${fieldName} contains invalid characters (newlines or control characters).`);
+  }
+  return trimmed;
+}
+
 export interface ConnectionInfo {
   mcpCommand: string;
   accessToken: string;
@@ -358,6 +371,13 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
   let apiKey = options.apiKey || process.env.N8N_API_KEY || envConfig.apiKey || globalConfig.apiKey || '';
   let instanceUrl = options.url || process.env.N8N_INSTANCE_URL || envConfig.instanceUrl || globalConfig.instanceUrl || '';
   let dbUrl = options.dbUrl || process.env.N8N_DB_URL || envConfig.dbUrl || globalConfig.dbUrl || '';
+
+  if (accessToken) {
+    accessToken = validateAndTrimCredential(accessToken, 'Access Token');
+  }
+  if (apiKey) {
+    apiKey = validateAndTrimCredential(apiKey, 'API Key') || '';
+  }
 
   if (!accessToken) {
     throw new Error(

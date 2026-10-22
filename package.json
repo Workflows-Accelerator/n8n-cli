@@ -1,6 +1,6 @@
 {
   "name": "@workflows-accelerator/n8n-cli",
-  "version": "1.2.40",
+  "version": "1.2.41",
   "description": "AI-First n8n Workflow CLI",
   "type": "module",
   "main": "./dist/cli.js",
@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsup",
+    "test": "node --import tsx --test test/**/*.test.ts",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },

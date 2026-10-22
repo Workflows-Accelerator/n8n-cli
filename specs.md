@@ -35,7 +35,7 @@ Stores project-specific, non-sensitive IDs and environment selectors.
 ```
 
 ### 1.2 Global Configuration
-**Path:** `~/.n8ncli-global.json` (Local to machine)
+**Path:** `~/.n8ncli-global.json` (Local to machine, note: stored directly at `~/.n8ncli-global.json`, not in `~/.n8n-cli/`)
 Allows storing multiple environments at the instance level (e.g. for different client instances). When the local configuration specifies `"env": "PROD"`, parameters are resolved from the corresponding global environment.
 ```json
 {
@@ -166,7 +166,7 @@ n8ncli projects [--query <q>] [--type personal|team] [--limit <n>]
 ```bash
 n8ncli pull [target] [--force] [--hard] [--skip-references] [--db-url <url>] [--api-key <key>] [--url <url>] [--env <name>] [--dry-run]
 ```
-- Pulls workflows matching configured `projectId`/`folderId` (or specific `[target]` workflow file, ID, or folder path).
+- Pulls workflows matching configured `projectId`/`folderId` (or specific `[target]` workflow file, ID, or folder path). Validates project existence against `search_projects` and throws an error if `projectId` or `[target]` does not match any remote workflows, exiting with code `1`.
 - **Pure MCP-Only Support**: Operates purely over MCP using only an instance URL and MCP access token. Does not require `N8N_API_KEY` or direct PostgreSQL connection (`N8N_DB_URL`).
 - Converts JSON definition to TypeScript using `@n8n/workflow-sdk`'s `generateWorkflowCode`.
 - Writes `.workflow.ts` locally and saves metadata to `sync-state.json`. Warns before overwriting modified local files.
@@ -184,7 +184,8 @@ n8ncli push [target] [--all] [--no-cache] [--force] [--prune] [--dry-run] [--db-
 - **`--prune`**: Purges remote database UI-generated duplicate workflows that match local canonical declarations with mismatched IDs.
 - **Deletions:** Calls `archive_workflow` for workflows removed locally.
 - **Creations:** Parses local TS code to JSON, runs `create_workflow_from_code` on n8n.
-- **Updates:** Runs `update_workflow` for modified TS files, displaying overwrite warnings when updating existing remote snapshots.
+- **Updates:** Uses REST API PUT or direct PostgreSQL synchronization when configured; when REST API and PostgreSQL are unavailable, executes atomic MCP `update_workflow` operations using AST diffing (`updateNodeParameters`, `addNode`, `removeNode`, `renameNode`, `addConnection`, `removeConnection`, `setNodePosition`, `setNodeDisabled`, `setNodeSettings`, `setWorkflowMetadata`, `setWorkflowSettings`) batched in chunks of up to 100 operations.
+- **Failure Safety & Exit Codes:** If any workflow write fails across REST API, database, or MCP, the workflow is NOT marked as updated, unpushed code is NOT cached, and push exits with code `1`.
 - **Version History Invalidation**: Automatically invalidates and overwrites active version snapshots in PostgreSQL tables (`workflow_history`, `workflow_published_version`, `workflow_entity`) when `dbUrl` is connected so the n8n execution engine immediately uses newly pushed code.
 - **Folder Sync**: If a PostgreSQL `dbUrl` is configured:
   - **Create**: Inserts missing subdirectories into the `folder` table.
@@ -294,7 +295,7 @@ n8ncli sdk [section-or-query]
 ### `n8ncli environments` / `env`
 - `n8ncli env list` (or `n8ncli env` / `envs`): Lists all configured n8n environments from the global configuration (~/.n8ncli-global.json).
 - `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS`, `FAILURE`, or `SKIPPED` (for unconfigured optional services like REST API or DB) with connection status details.
-- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Interactive mode prompts for instance URL, access token, optional API key, and optional DB URL, automatically defaulting `mcpCommand` without prompting. Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
+- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Interactive mode prompts for instance URL, access token, optional API key, and optional DB URL, automatically defaulting `mcpCommand` without prompting. Validates and trims credentials (`--api-key`, `--access-token`) to reject newlines and control characters that would trigger HTTP header errors. Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
 - `n8ncli env delete <name>` (or `remove`): Removes an environment configuration from global config settings.
 
 ### `n8ncli lint`

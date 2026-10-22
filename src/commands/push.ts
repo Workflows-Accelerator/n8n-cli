@@ -5,7 +5,7 @@ import { glob } from 'glob';
 import pg from 'pg';
 import { getConnectionInfo, buildFolderPaths, convertLocalJsonWorkflows, syncCredentials, loadLayoutSettings, fetchWithRetry } from '../config.js';
 import { withMcp, McpClient } from '../mcp-client.js';
-import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache } from '../sync-state.js';
+import { loadSyncState, saveSyncState, calculateHash, SyncWorkflowEntry, saveWorkflowCache, loadWorkflowCache, deleteWorkflowCache, generateWorkflowUpdateOperations, chunkOperations } from '../sync-state.js';
 import { showConflictDiff, stripPositions } from './diff.js';
 import { parseWorkflowCodeToBuilder, validateWorkflow, generateWorkflowCode } from '@n8n/workflow-sdk';
 import * as output from '../output.js';
@@ -74,6 +74,7 @@ export function pushCommand(program: Command) {
     .action(async (targetArg, options) => {
       let pgClient: any = null;
       let hasConflicts = false;
+      let hasErrors = false;
       try {
         await loadNodesDatabase();
         const { mcpCommand, accessToken, config, repoRoot, localDir, dbUrl, apiKey, instanceUrl } = getConnectionInfo(options);
@@ -637,6 +638,7 @@ export function pushCommand(program: Command) {
                 output.log(`[PRUNE] Purged ${pruneRes.prunedCount} orphaned remote duplicate workflow(s) from database: ${pruneRes.prunedIds.join(', ')}`);
               }
             } catch (err) {
+              hasErrors = true;
               output.error(`Failed to prune orphaned workflows: ${err instanceof Error ? err.message : String(err)}`);
             }
           }
@@ -652,6 +654,7 @@ export function pushCommand(program: Command) {
               delete syncState.workflows[relPath];
               deleteWorkflowCache(repoRoot, entry.id, localDir);
             } catch (err) {
+              hasErrors = true;
               output.error(`Failed to archive workflow '${entry.name}': ${err instanceof Error ? err.message : String(err)}`);
             }
           }
@@ -684,128 +687,165 @@ export function pushCommand(program: Command) {
 
             try {
               const code = localCodes[rename.newPath];
+              const builder = parseWorkflowCodeToBuilder(code);
+              const workflowJson = builder.toJSON();
+
+              const allowedKeys = [
+                'name',
+                'nodes',
+                'connections',
+                'settings',
+                'staticData',
+                'meta',
+                'pinData'
+              ];
+              const sanitizedWf: Record<string, any> = {};
+              for (const key of allowedKeys) {
+                if (workflowJson[key] !== undefined) {
+                  sanitizedWf[key] = workflowJson[key];
+                }
+              }
+              
+              // Remove availableInMCP from settings as n8n REST API rejects it
+              if (sanitizedWf.settings) {
+                sanitizedWf.settings = { ...sanitizedWf.settings };
+                delete sanitizedWf.settings.availableInMCP;
+                delete sanitizedWf.settings.binaryMode;
+                delete sanitizedWf.settings.description;
+                delete sanitizedWf.settings.active;
+              }
+
+              // Set parentFolderId relationship
+              sanitizedWf.parentFolderId = isMove ? (newFolderId || null) : (oldFolderId || null);
+
+              let updatedSuccessfully = false;
+
               if (apiKey && instanceUrl) {
-                const builder = parseWorkflowCodeToBuilder(code);
-                const workflowJson = builder.toJSON();
-
-                const allowedKeys = [
-                  'name',
-                  'nodes',
-                  'connections',
-                  'settings',
-                  'staticData',
-                  'meta',
-                  'pinData'
-                ];
-                const sanitizedWf: Record<string, any> = {};
-                for (const key of allowedKeys) {
-                  if (workflowJson[key] !== undefined) {
-                    sanitizedWf[key] = workflowJson[key];
+                try {
+                  const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
+                  const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${rename.id}`, {
+                    method: 'PUT',
+                    headers: {
+                      'X-N8N-API-KEY': apiKey,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(sanitizedWf),
+                  });
+                  if (res.ok) {
+                    updatedSuccessfully = true;
                   }
-                }
-                
-                // Remove availableInMCP from settings as n8n REST API rejects it
-                if (sanitizedWf.settings) {
-                  sanitizedWf.settings = { ...sanitizedWf.settings };
-                  delete sanitizedWf.settings.availableInMCP;
-                  delete sanitizedWf.settings.binaryMode;
-                  delete sanitizedWf.settings.description;
-                }
+                } catch (e) {}
+              }
 
-                // Set parentFolderId relationship
-                sanitizedWf.parentFolderId = isMove ? (newFolderId || null) : (oldFolderId || null);
-
-                const cleanInstanceUrl = instanceUrl.replace(/\/$/, '');
-                const res = await fetch(`${cleanInstanceUrl}/api/v1/workflows/${rename.id}`, {
-                  method: 'PUT',
-                  headers: {
-                    'X-N8N-API-KEY': apiKey,
-                    'Content-Type': 'application/json',
-                  },
-                  body: JSON.stringify(sanitizedWf),
-                });
-                if (!res.ok) {
-                  const errorText = await res.text();
-                  try {
-                    const json = JSON.parse(errorText);
-                    if (json.message && json.message.toLowerCase().includes('additional properties')) {
-                      let offendingField = '';
-                      if (Array.isArray(json.validation)) {
-                        const addProp = json.validation.find((v: any) => v.keyword === 'additionalProperties');
-                        if (addProp && addProp.params && addProp.params.additionalProperty) {
-                          offendingField = addProp.params.additionalProperty;
-                        }
-                      }
-                      if (!offendingField && Array.isArray(json.errors)) {
-                        const addProp = json.errors.find((v: any) => v.keyword === 'additionalProperties' || (v.params && v.params.additionalProperty));
-                        if (addProp && addProp.params && addProp.params.additionalProperty) {
-                          offendingField = addProp.params.additionalProperty;
-                        }
-                      }
-                      if (offendingField) {
-                        output.warn(`Warning: Skipping push for workflow '${rename.name}' (ID: ${rename.id}) because n8n API rejected it due to additional property "${offendingField}". Please remove this property from the workflow configuration.`);
-                        continue;
-                      }
-                    }
-                  } catch (e) {}
-                  throw new Error(`Failed to update workflow via REST API: ${res.statusText}. Details: ${errorText}`);
-                }
-
-                // If dbUrl and availableInMCP is true, set it in DB
-                if (dbUrl && workflowJson.settings?.availableInMCP) {
+              // DB Fallback
+              if (!updatedSuccessfully && (pgClient || dbUrl)) {
+                let dbClientToUse = pgClient;
+                let createdTempDbClient = false;
+                if (!dbClientToUse && dbUrl) {
                   try {
                     const pgModule = pg as any;
                     const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
-                    const client = new ClientClass({
+                    dbClientToUse = new ClientClass({
                       connectionString: dbUrl,
                       ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
                     });
-                    await client.connect();
-                    try {
-                      let schema = 'public';
-                      try {
-                        const colsRes = await client.query(`
-                          SELECT table_schema
-                          FROM information_schema.columns 
-                          WHERE table_name = 'workflow_entity' LIMIT 1;
-                        `);
-                        if (colsRes.rows.length > 0) {
-                          schema = colsRes.rows[0].table_schema;
-                        }
-                      } catch (schemaErr) {
-                        // fallback to public
-                      }
-                      await client.query(
-                        `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
-                        [rename.id]
-                      );
-                    } finally {
-                      await client.end();
+                    await dbClientToUse.connect();
+                    createdTempDbClient = true;
+                  } catch (e) {
+                    dbClientToUse = null;
+                  }
+                }
+                if (dbClientToUse) {
+                  try {
+                    await syncWorkflowVersionAndHistory(dbClientToUse, rename.id, workflowJson, projectId);
+                    if (isMove && newFolderId !== undefined) {
+                      await dbClientToUse.query('UPDATE workflow_entity SET "parentFolderId" = $1 WHERE id = $2;', [newFolderId || null, rename.id]);
                     }
-                  } catch (e) {}
+                    updatedSuccessfully = true;
+                  } catch (e) {} finally {
+                    if (createdTempDbClient && dbClientToUse) {
+                      try { await dbClientToUse.end(); } catch (e) {}
+                    }
+                  }
                 }
+              }
 
-                // Delete old path and save new path in syncState
-                delete syncState.workflows[rename.oldPath];
-                syncState.workflows[rename.newPath] = {
-                  id: rename.id,
-                  name: rename.name,
-                  localPath: rename.newPath,
-                  contentHash: localHashes[rename.newPath],
-                  remoteUpdatedAt: new Date().toISOString(),
-                  folderId: isMove ? newFolderId : oldFolderId,
-                };
-                saveWorkflowCache(repoRoot, rename.id, code, localDir);
+              // MCP Fallback
+              if (!updatedSuccessfully) {
+                try {
+                  if (rename.name) {
+                    await mcp.callTool('update_workflow', {
+                      workflowId: rename.id,
+                      operations: [{ type: 'setWorkflowMetadata', name: rename.name }],
+                    });
+                  }
+                  if (isMove && newFolderId !== undefined) {
+                    await mcp.callTool('move_workflows_to_folder', {
+                      workflowIds: [rename.id],
+                      folderId: newFolderId || '0',
+                    });
+                  }
+                  updatedSuccessfully = true;
+                } catch (e) {}
+              }
 
-                if (isMove) {
-                  output.log(`  [MOVED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
-                } else {
-                  output.log(`  [RENAMED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
-                }
+              if (!updatedSuccessfully) {
+                throw new Error(`Failed to update/move workflow '${rename.name}' (ID: ${rename.id}). REST API, PostgreSQL database, and MCP tools were unable to write changes.`);
+              }
+
+              // If dbUrl and availableInMCP is true, set it in DB
+              if (dbUrl && workflowJson.settings?.availableInMCP) {
+                try {
+                  const pgModule = pg as any;
+                  const ClientClass = pgModule.Client || pgModule.default?.Client || pgModule;
+                  const client = new ClientClass({
+                    connectionString: dbUrl,
+                    ssl: (dbUrl.includes('localhost') || dbUrl.includes('sslmode=disable') || dbUrl.includes('ssl=false')) ? false : { rejectUnauthorized: false }
+                  });
+                  await client.connect();
+                  try {
+                    let schema = 'public';
+                    try {
+                      const colsRes = await client.query(`
+                        SELECT table_schema
+                        FROM information_schema.columns 
+                        WHERE table_name = 'workflow_entity' LIMIT 1;
+                      `);
+                      if (colsRes.rows.length > 0) {
+                        schema = colsRes.rows[0].table_schema;
+                      }
+                    } catch (schemaErr) {
+                      // fallback to public
+                    }
+                    await client.query(
+                      `UPDATE "${schema}"."workflow_entity" SET "settings" = jsonb_set("settings"::jsonb, '{availableInMCP}', 'true') WHERE "id" = $1;`,
+                      [rename.id]
+                    );
+                  } finally {
+                    await client.end();
+                  }
+                } catch (e) {}
+              }
+
+              // Delete old path and save new path in syncState
+              delete syncState.workflows[rename.oldPath];
+              syncState.workflows[rename.newPath] = {
+                id: rename.id,
+                name: rename.name,
+                localPath: rename.newPath,
+                contentHash: localHashes[rename.newPath],
+                remoteUpdatedAt: new Date().toISOString(),
+                folderId: isMove ? newFolderId : oldFolderId,
+              };
+              saveWorkflowCache(repoRoot, rename.id, code, localDir);
+
+              if (isMove) {
+                output.log(`  [MOVED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
               } else {
-                throw new Error('REST API key or instance URL is missing. Cannot perform workflow update.');
+                output.log(`  [RENAMED & UPDATED] ${rename.oldPath} -> ${rename.newPath} (ID: ${rename.id})`);
               }
             } catch (err) {
+              hasErrors = true;
               output.error(`Failed to update/move workflow '${rename.name}': ${err instanceof Error ? err.message : String(err)}`);
             }
           }
@@ -855,6 +895,7 @@ export function pushCommand(program: Command) {
               output.log(`  [CREATED] ${relPath} (ID: ${newId})`);
               await new Promise(r => setTimeout(r, 1200));
             } catch (err) {
+              hasErrors = true;
               output.error(`Failed to create workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
             }
           }
@@ -939,6 +980,7 @@ export function pushCommand(program: Command) {
                 delete sanitizedWf.settings.availableInMCP;
                 delete sanitizedWf.settings.binaryMode;
                 delete sanitizedWf.settings.description;
+                delete sanitizedWf.settings.active;
               }
 
               let updatedSuccessfully = false;
@@ -1024,13 +1066,30 @@ export function pushCommand(program: Command) {
                 } catch (e) {}
 
                 try {
-                  await mcp.callTool('update_workflow', {
-                    workflowId: entry.id,
-                    operations: [
-                      { type: 'setWorkflowMetadata', name }
-                    ]
-                  });
-                  updatedSuccessfully = true;
+                  if (!remoteDetails) {
+                    const remoteDetailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
+                      workflowId: entry.id,
+                      id: entry.id,
+                    });
+                    remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
+                  }
+
+                  const operations = generateWorkflowUpdateOperations(workflowJson, remoteDetails);
+                  if (operations.length === 0) {
+                    updatedSuccessfully = true;
+                  } else {
+                    const batches = chunkOperations(operations, 100);
+                    for (const batch of batches) {
+                      const updateRes = await mcp.callToolAndGetJson('update_workflow', {
+                        workflowId: entry.id,
+                        operations: batch,
+                      });
+                      if (updateRes && (updateRes.error || updateRes.isError)) {
+                        throw new Error(`MCP update_workflow error: ${updateRes.error || JSON.stringify(updateRes)}`);
+                      }
+                    }
+                    updatedSuccessfully = true;
+                  }
                 } catch (e) {}
               }
 
@@ -1102,6 +1161,7 @@ export function pushCommand(program: Command) {
               saveWorkflowCache(repoRoot, entry.id, code, localDir);
               output.log(`  [UPDATED] ${finalRelPath}`);
             } catch (err) {
+              hasErrors = true;
               output.error(`Failed to update workflow '${name}': ${err instanceof Error ? err.message : String(err)}`);
             }
           }
@@ -1114,6 +1174,7 @@ export function pushCommand(program: Command) {
                 await pgClient.query('DELETE FROM folder WHERE id = $1;', [candidate.id]);
                 activeFolderIds.delete(candidate.id);
               } catch (err) {
+                hasErrors = true;
                 output.error(`Failed to prune folder '${candidate.name}' (ID: ${candidate.id}): ${err instanceof Error ? err.message : String(err)}`);
               }
             }
@@ -1132,6 +1193,9 @@ export function pushCommand(program: Command) {
         output.log('Push complete.');
         if (hasConflicts) {
           process.exit(3);
+        }
+        if (hasErrors) {
+          process.exit(1);
         }
       } catch (err) {
         output.error(err instanceof Error ? err.message : String(err));
