@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import readline from 'readline';
 import pg from 'pg';
-import { loadGlobalConfig, saveGlobalConfig, getGlobalConfigPath, validateAndTrimCredential } from '../config.js';
+import { loadGlobalConfig, saveGlobalConfig, getGlobalConfigPath, validateAndTrimCredential, sanitizeInstanceUrl, getN8nCredentialLinks } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 
@@ -46,7 +46,7 @@ export async function testRestApi(instanceUrl: string, apiKey: string): Promise<
   if (!instanceUrl) return { success: false, status: 'FAILURE', message: 'Instance URL not configured' };
   if (!apiKey) return { success: false, status: 'SKIPPED', message: 'Not configured (optional)' };
 
-  const cleanUrl = instanceUrl.replace(/\/$/, '');
+  const cleanUrl = sanitizeInstanceUrl(instanceUrl);
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
@@ -58,6 +58,10 @@ export async function testRestApi(instanceUrl: string, apiKey: string): Promise<
     if (res.ok) {
       return { success: true, status: 'SUCCESS', message: 'Connected successfully' };
     } else {
+      if (res.status === 401 || res.status === 403) {
+        const { apiUrl } = getN8nCredentialLinks(cleanUrl);
+        return { success: false, status: 'FAILURE', message: `Status ${res.status} (${res.statusText}). Verify API key at: ${apiUrl}` };
+      }
       return { success: false, status: 'FAILURE', message: `Status ${res.status} (${res.statusText})` };
     }
   } catch (err) {
@@ -67,16 +71,25 @@ export async function testRestApi(instanceUrl: string, apiKey: string): Promise<
 }
 
 export async function testMcp(mcpCommand: string, accessToken: string, instanceUrl: string): Promise<TestResult> {
-  if (!accessToken) return { success: false, status: 'FAILURE', message: 'Access token not configured' };
+  const cleanUrl = sanitizeInstanceUrl(instanceUrl);
+  if (!accessToken) {
+    const { mcpUrl } = getN8nCredentialLinks(cleanUrl);
+    return { success: false, status: 'FAILURE', message: `Access token not configured. Find it at: ${mcpUrl}` };
+  }
 
   try {
     // Attempt connecting via MCP and executing search_projects
     await withMcp(mcpCommand, accessToken, async (mcp) => {
       await mcp.callToolAndGetJson('search_projects', { limit: 1 });
-    }, instanceUrl);
+    }, cleanUrl);
     return { success: true, status: 'SUCCESS', message: 'Connected successfully' };
   } catch (err) {
-    return { success: false, status: 'FAILURE', message: err instanceof Error ? err.message : String(err) };
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    if (rawMsg.includes('401') || rawMsg.includes('403') || rawMsg.toLowerCase().includes('unauthorized') || rawMsg.toLowerCase().includes('forbidden')) {
+      const { mcpUrl } = getN8nCredentialLinks(cleanUrl);
+      return { success: false, status: 'FAILURE', message: `${rawMsg}. Verify your MCP access token at: ${mcpUrl}` };
+    }
+    return { success: false, status: 'FAILURE', message: rawMsg };
   }
 }
 
@@ -279,7 +292,17 @@ export function environmentsCommand(program: Command) {
           output.log(`\nConfiguring environment '${name}' interactively...`);
           const prompter = createPrompter();
           try {
-            url = await prompter.ask('Instance URL', existingEnv.instanceUrl || 'http://localhost:5678');
+            const rawUrl = await prompter.ask('Instance URL', existingEnv.instanceUrl || 'http://localhost:5678');
+            url = sanitizeInstanceUrl(rawUrl);
+            if (url && rawUrl.trim() && url !== rawUrl.trim()) {
+              output.log(`Auto-trimmed instance URL to base: ${url}`);
+            }
+
+            const { mcpUrl, apiUrl } = getN8nCredentialLinks(url);
+            output.log(`\nWhere to find your credentials on this instance:`);
+            output.log(`  • MCP Access Token:  ${mcpUrl}`);
+            output.log(`  • REST API Key:      ${apiUrl} (optional)\n`);
+
             mcpCommand = existingEnv.mcpCommand || 'npx -y n8n-mcp';
             accessToken = await prompter.ask('MCP Access Token', existingEnv.accessToken || '');
             apiKey = await prompter.ask('REST API Key (optional - press Enter to skip)', existingEnv.apiKey || '');
@@ -290,7 +313,13 @@ export function environmentsCommand(program: Command) {
         }
 
         const updates: any = {};
-        if (url !== undefined) updates.instanceUrl = typeof url === 'string' ? url.trim() : url;
+        if (url !== undefined) {
+          const sanitized = sanitizeInstanceUrl(url);
+          updates.instanceUrl = sanitized;
+          if (typeof url === 'string' && url.trim() && sanitized !== url.trim()) {
+            output.log(`Auto-trimmed instance URL to base: ${sanitized}`);
+          }
+        }
         if (mcpCommand !== undefined) updates.mcpCommand = typeof mcpCommand === 'string' ? mcpCommand.trim() : mcpCommand;
         if (accessToken !== undefined) updates.accessToken = validateAndTrimCredential(accessToken, 'MCP Access Token');
         if (apiKey !== undefined) updates.apiKey = validateAndTrimCredential(apiKey, 'REST API Key');

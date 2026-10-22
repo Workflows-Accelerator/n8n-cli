@@ -126,6 +126,8 @@ n8ncli init --url <url> --access-token <token> [--api-key <key>] [--env <name>] 
 - Populates/appends `.env` and `.gitignore`.
 - Establishes `n8n/config/n8n-cli.json`.
 - Saves configurations globally to `~/.n8ncli-global.json` under the specified `--env` namespace.
+- **Instance URL Auto-Trimming:** Automatically detects and strips subpaths, workflow routes (`/workflow/...`), settings routes (`/settings/...`), execution routes, query parameters, and trailing slashes from full n8n URLs down to the canonical base URL.
+- **Credential Guidance Links:** Guides users directly to their instance's MCP Access Token (`<baseUrl>/settings/mcp`) and REST API Key (`<baseUrl>/settings/api`) configuration pages during interactive setup and credential error prompts.
 - **`--include-examples` / `--no-examples`**: Includes built-in reference workflow examples in `n8n/references/` by default.
 - **`--reset`**: Resets the default config files (`n8n-standards.json` and `n8n-layout.json`) to defaults and removes transient local cache files (`sync-state.json`, `workflow-folders.json`, and `unconfigured-credentials.json`). By default, without `--reset`, existing configuration files and custom rules are preserved.
 
@@ -294,8 +296,8 @@ n8ncli sdk [section-or-query]
 
 ### `n8ncli environments` / `env`
 - `n8ncli env list` (or `n8ncli env` / `envs`): Lists all configured n8n environments from the global configuration (~/.n8ncli-global.json).
-- `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS`, `FAILURE`, or `SKIPPED` (for unconfigured optional services like REST API or DB) with connection status details.
-- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Interactive mode prompts for instance URL, access token, optional API key, and optional DB URL, automatically defaulting `mcpCommand` without prompting. Validates and trims credentials (`--api-key`, `--access-token`) to reject newlines and control characters that would trigger HTTP header errors. Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
+- `n8ncli env test [name]`: Tests REST API, MCP Server, and PostgreSQL database connections for a specific environment (or all configured environments if `name` is omitted). Returns `SUCCESS`, `FAILURE`, or `SKIPPED` (for unconfigured optional services like REST API or DB) with connection status details and direct credential links on authentication failures.
+- `n8ncli env edit <name>`: Interactively or via flags creates or modifies settings for a specific environment (saved in `~/.n8ncli-global.json`). Interactive mode prompts for instance URL (auto-trimming full workflow or settings URLs to the canonical base URL), provides direct guidance links to MCP Access Token (`<baseUrl>/settings/mcp`) and REST API Key (`<baseUrl>/settings/api`), and prompts for credentials. Validates and trims credentials (`--api-key`, `--access-token`) to reject newlines and control characters that would trigger HTTP header errors. Flags: `--url <url>`, `--mcp-command <cmd>`, `--access-token <token>`, `--api-key <key>`, `--db-url <url>`.
 - `n8ncli env delete <name>` (or `remove`): Removes an environment configuration from global config settings.
 
 ### `n8ncli lint`

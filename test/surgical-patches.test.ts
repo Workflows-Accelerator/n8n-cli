@@ -5,7 +5,7 @@ import {
   chunkOperations,
   isTargetScoped,
 } from '../src/sync-state.js';
-import { validateAndTrimCredential } from '../src/config.js';
+import { validateAndTrimCredential, sanitizeInstanceUrl, getN8nCredentialLinks } from '../src/config.js';
 
 describe('Surgical Patches: Bug 2 - AST Diff Engine (generateWorkflowUpdateOperations)', () => {
   it('generates updateNodeParameters when node parameters differ', () => {
@@ -256,6 +256,100 @@ describe('Surgical Patches: Credential Trimming and Validation', () => {
       () => validateAndTrimCredential('secret\x00key', 'API Key'),
       /API Key contains invalid characters/
     );
+  });
+});
+
+describe('Surgical Patches: URL Auto-Trimming and Credential Guidance Links', () => {
+  it('strips workflow paths, query strings, and hashes to extract base instance URL', () => {
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/workflow/D071jZ8jS'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('http://localhost:5678/workflow/abc123xyz?execution=1#section'),
+      'http://localhost:5678'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://demo.app.n8n.cloud/workflows/new'),
+      'https://demo.app.n8n.cloud'
+    );
+  });
+
+  it('strips settings, executions, home, webhooks, templates, and API paths', () => {
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/settings/mcp'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/settings/api'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/executions/9876'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/home/workflows'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/webhook/test-webhook-uuid'),
+      'https://my-company.app.n8n.cloud'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-company.app.n8n.cloud/api/v1/workflows'),
+      'https://my-company.app.n8n.cloud'
+    );
+  });
+
+  it('preserves subpath deployments when stripping routes', () => {
+    assert.equal(
+      sanitizeInstanceUrl('https://example.com/n8n/workflow/123'),
+      'https://example.com/n8n'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://example.com/n8n/settings/api'),
+      'https://example.com/n8n'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://example.com/n8n/'),
+      'https://example.com/n8n'
+    );
+  });
+
+  it('handles missing protocols, ports, and trailing slashes', () => {
+    assert.equal(
+      sanitizeInstanceUrl('localhost:5678/workflow/123'),
+      'http://localhost:5678'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('127.0.0.1:5678/settings/mcp'),
+      'http://127.0.0.1:5678'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('my-n8n.example.com/workflow/abc'),
+      'https://my-n8n.example.com'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-n8n.example.com:8443/settings/mcp'),
+      'https://my-n8n.example.com:8443'
+    );
+    assert.equal(
+      sanitizeInstanceUrl('https://my-n8n.example.com/'),
+      'https://my-n8n.example.com'
+    );
+    assert.equal(sanitizeInstanceUrl(''), '');
+    assert.equal(sanitizeInstanceUrl(undefined), '');
+  });
+
+  it('generates direct credential guidance links for MCP access token and REST API key', () => {
+    const links = getN8nCredentialLinks('https://demo.app.n8n.cloud/workflow/D071jZ8jS');
+    assert.equal(links.mcpUrl, 'https://demo.app.n8n.cloud/settings/mcp');
+    assert.equal(links.apiUrl, 'https://demo.app.n8n.cloud/settings/api');
+
+    const localhostLinks = getN8nCredentialLinks('http://localhost:5678/');
+    assert.equal(localhostLinks.mcpUrl, 'http://localhost:5678/settings/mcp');
+    assert.equal(localhostLinks.apiUrl, 'http://localhost:5678/settings/api');
   });
 });
 

@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
-import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig, saveDefaultLayoutSettings } from '../config.js';
+import { saveConfig, N8nCliConfig, saveGlobalConfig, loadGlobalConfig, saveDefaultLayoutSettings, sanitizeInstanceUrl, getN8nCredentialLinks, validateAndTrimCredential } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import * as output from '../output.js';
 import { writeSkillFile } from './import-skill.js';
@@ -73,23 +73,35 @@ export function initCommand(program: Command) {
         const envConfig = globalConfig.environments?.[envName] || {};
 
         const defaultUrl = options.url || envConfig.instanceUrl || globalConfig.instanceUrl || '';
-        instanceUrl = await askQuestion('n8n instance URL', defaultUrl);
+        const rawUrl = await askQuestion('n8n instance URL', defaultUrl);
+        instanceUrl = sanitizeInstanceUrl(rawUrl);
+        if (instanceUrl && rawUrl.trim() && instanceUrl !== rawUrl.trim()) {
+          output.log(`Auto-trimmed instance URL to base: ${instanceUrl}`);
+        }
+
+        if (!instanceUrl) {
+          output.error('Error: n8n instance URL is required.');
+          process.exit(1);
+        }
+
+        const { mcpUrl, apiUrl } = getN8nCredentialLinks(instanceUrl);
+        output.log(`\nWhere to find your credentials on this instance:`);
+        output.log(`  • MCP Access Token:  ${mcpUrl}`);
+        output.log(`  • REST API Key:      ${apiUrl} (optional)\n`);
 
         const defaultToken = options.accessToken || envConfig.accessToken || globalConfig.accessToken || '';
-        accessToken = await askQuestion('n8n access token', defaultToken);
+        const rawToken = await askQuestion('n8n access token', defaultToken);
+        accessToken = validateAndTrimCredential(rawToken, 'Access Token');
 
         const defaultApiKey = options.apiKey || envConfig.apiKey || globalConfig.apiKey || '';
-        apiKey = await askQuestion('n8n REST API key (optional)', defaultApiKey);
+        const rawApiKey = await askQuestion('n8n REST API key (optional)', defaultApiKey);
+        apiKey = validateAndTrimCredential(rawApiKey, 'REST API Key');
 
         const defaultDbUrl = options.dbUrl || envConfig.dbUrl || globalConfig.dbUrl || '';
         dbUrl = await askQuestion('PostgreSQL database connection URL (optional)', defaultDbUrl);
 
         const mcpCommand = options.mcpCommand || envConfig.mcpCommand || globalConfig.mcpCommand || 'npx -y n8n-mcp';
 
-        if (!instanceUrl) {
-          output.error('Error: n8n instance URL is required.');
-          process.exit(1);
-        }
         if (!accessToken) {
           output.error('Error: n8n access token is required.');
           process.exit(1);
@@ -217,10 +229,20 @@ export function initCommand(program: Command) {
         process.exit(1);
       }
 
+      const cleanInstanceUrl = sanitizeInstanceUrl(instanceUrl);
+      if (instanceUrl.trim() && cleanInstanceUrl !== instanceUrl.trim()) {
+        output.log(`Auto-trimmed instance URL to base: ${cleanInstanceUrl}`);
+      }
+      instanceUrl = cleanInstanceUrl;
+
       if (!accessToken) {
-        output.error('Error: n8n access token is required. Provide it via --access-token flag or configure it globally.');
+        const { mcpUrl } = getN8nCredentialLinks(instanceUrl);
+        output.error(`Error: n8n access token is required. Provide it via --access-token flag or configure it globally.\nTip: Find your MCP access token on your instance at: ${mcpUrl}`);
         process.exit(1);
       }
+
+      if (accessToken) accessToken = validateAndTrimCredential(accessToken, 'Access Token');
+      if (apiKey) apiKey = validateAndTrimCredential(apiKey, 'REST API Key');
 
       // Save global configs under the selected environment name
       const globalUpdates: any = {};

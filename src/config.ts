@@ -274,6 +274,59 @@ export function saveDefaultLayoutSettings(repoRoot: string) {
 
 
 /**
+ * Strips workflow paths, setting routes, query parameters, hashes, and trailing slashes
+ * from any arbitrary n8n URL provided by the user, leaving the clean base instance URL.
+ */
+export function sanitizeInstanceUrl(rawUrl?: string): string {
+  if (!rawUrl) return '';
+  let trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+
+  // Add protocol if missing
+  if (!/^https?:\/\//i.test(trimmed)) {
+    if (/^(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/i.test(trimmed)) {
+      trimmed = `http://${trimmed}`;
+    } else {
+      trimmed = `https://${trimmed}`;
+    }
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    let pathname = parsed.pathname;
+
+    // Remove known n8n subpaths (e.g. /workflow/..., /workflows/..., /settings/..., /execution/..., /executions/..., /home/..., /signin, /login, /templates/..., /mcp-server/..., /webhook/..., /api/...)
+    const n8nRouteRegex = /\/(workflow|workflows|settings|execution|executions|home|signin|login|templates|mcp-server|webhook|webhook-test|form|form-test|waiting-webhook|api)(\/.*)?$/i;
+    pathname = pathname.replace(n8nRouteRegex, '');
+
+    // Remove trailing slash
+    pathname = pathname.replace(/\/+$/, '');
+
+    return `${parsed.origin}${pathname}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+}
+
+/**
+ * Returns direct guidance links for finding the MCP Access Token and REST API Key
+ * using the n8n base instance URL.
+ */
+export function getN8nCredentialLinks(instanceUrl?: string): { mcpUrl: string; apiUrl: string } {
+  const base = sanitizeInstanceUrl(instanceUrl);
+  if (!base) {
+    return {
+      mcpUrl: '/settings/mcp',
+      apiUrl: '/settings/api',
+    };
+  }
+  return {
+    mcpUrl: `${base}/settings/mcp`,
+    apiUrl: `${base}/settings/api`,
+  };
+}
+
+/**
  * Trims whitespace and validates credentials against invalid characters (newlines and control characters)
  * that would cause HTTP header validation failures.
  */
@@ -379,15 +432,20 @@ export function getConnectionInfo(options: { mcpCommand?: string; accessToken?: 
     apiKey = validateAndTrimCredential(apiKey, 'API Key') || '';
   }
 
-  if (!accessToken) {
-    throw new Error(
-      `n8n access token is required. Set N8N_ACCESS_TOKEN in your environment, global config environments.${envKey}.accessToken, or pass it via --access-token flag.`
-    );
+  if (instanceUrl) {
+    instanceUrl = sanitizeInstanceUrl(instanceUrl);
   }
 
   if (!instanceUrl) {
     throw new Error(
       `n8n instance URL is required. Set N8N_INSTANCE_URL in your environment, global config environments.${envKey}.instanceUrl, or pass it via --url flag.`
+    );
+  }
+
+  if (!accessToken) {
+    const { mcpUrl } = getN8nCredentialLinks(instanceUrl);
+    throw new Error(
+      `n8n access token is required. Set N8N_ACCESS_TOKEN in your environment, global config environments.${envKey}.accessToken, or pass it via --access-token flag.\nTip: Find your MCP access token on your instance at: ${mcpUrl}`
     );
   }
 
