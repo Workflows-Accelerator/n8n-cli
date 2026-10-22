@@ -6,6 +6,7 @@ import {
   isTargetScoped,
 } from '../src/sync-state.js';
 import { validateAndTrimCredential, sanitizeInstanceUrl, getN8nCredentialLinks } from '../src/config.js';
+import { parseSemver, isNewerVersion, parseChangelog, getChangelogEntries } from '../src/update-check.js';
 
 describe('Surgical Patches: Bug 2 - AST Diff Engine (generateWorkflowUpdateOperations)', () => {
   it('generates updateNodeParameters when node parameters differ', () => {
@@ -350,6 +351,57 @@ describe('Surgical Patches: URL Auto-Trimming and Credential Guidance Links', ()
     const localhostLinks = getN8nCredentialLinks('http://localhost:5678/');
     assert.equal(localhostLinks.mcpUrl, 'http://localhost:5678/settings/mcp');
     assert.equal(localhostLinks.apiUrl, 'http://localhost:5678/settings/api');
+  });
+});
+
+describe('Surgical Patches: Update Checker and Changelog', () => {
+  it('correctly compares semver versions with parseSemver and isNewerVersion', () => {
+    assert.deepEqual(parseSemver('1.2.43'), [1, 2, 43]);
+    assert.deepEqual(parseSemver('v2.0.1-beta.1'), [2, 0, 1]);
+
+    assert.equal(isNewerVersion('1.2.44', '1.2.43'), true);
+    assert.equal(isNewerVersion('1.3.0', '1.2.43'), true);
+    assert.equal(isNewerVersion('2.0.0', '1.2.43'), true);
+    assert.equal(isNewerVersion('v1.2.44', '1.2.43'), true);
+
+    assert.equal(isNewerVersion('1.2.43', '1.2.43'), false);
+    assert.equal(isNewerVersion('1.2.42', '1.2.43'), false);
+    assert.equal(isNewerVersion('1.1.99', '1.2.43'), false);
+    assert.equal(isNewerVersion('0.9.0', '1.2.43'), false);
+  });
+
+  it('parses markdown changelog entries and extracts versions and release notes', () => {
+    const sample = `
+# Changelog
+
+## [1.2.43] - 2026-10-23
+### Added
+- Auto update alert
+- Self update command
+
+## [1.2.42] - 2026-10-22
+### Added
+- URL auto trimming
+`;
+    const entries = parseChangelog(sample);
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].version, '1.2.43');
+    assert.equal(entries[0].date, '2026-10-23');
+    assert.match(entries[0].content, /Auto update alert/);
+
+    assert.equal(entries[1].version, '1.2.42');
+    assert.equal(entries[1].date, '2026-10-22');
+    assert.match(entries[1].content, /URL auto trimming/);
+  });
+
+  it('filters changelog entries with getChangelogEntries', () => {
+    const recent = getChangelogEntries(undefined, 2);
+    assert.ok(recent.length > 0);
+    assert.equal(recent[0].version, '1.2.43');
+
+    const since41 = getChangelogEntries('1.2.41');
+    assert.ok(since41.length >= 2);
+    assert.ok(since41.every(e => isNewerVersion(e.version, '1.2.41')));
   });
 });
 

@@ -198,6 +198,8 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - \`n8ncli nodes types <nodeIds...>\`: View exact TypeScript parameters and interfaces for nodes (supports colon syntax e.g. \`n8n-nodes-base.gmail:message:send\` for operation-specific types).
 - \`n8ncli nodes doc <nodeId>\`: Get interactive documentation, copy-pasteable TypeScript SDK code examples, parameter details, and raw types.
 - \`n8ncli sdk [section-or-query]\`: View workflow SDK guidelines, expressions, patterns, and rules, or search case-insensitively for a keyword.
+- \`n8ncli update [--check] [--force] [--changelog]\`: Update n8ncli to the latest published release via npm.
+- \`n8ncli changelog [--all] [--limit <n>] [--from <version>]\`: Show release notes and what changed since last version.
 
 ---
 

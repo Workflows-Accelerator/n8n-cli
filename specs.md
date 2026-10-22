@@ -365,6 +365,26 @@ n8ncli live [--interval <seconds>] [--ttl <minutes>] [--stop] [--status] [--fore
 - **Interval**: Defaults to `5` seconds when direct PostgreSQL database connection (`--db-url`) is available (efficient polling), and `20` seconds when falling back to REST API polling. Can be overridden via `--interval`.
 - **Status File**: Generates and updates `n8n/config/live-status.json` on each tick. The file is structured for easy consumption by AI agents and other processes, detailing daemon status, pid, backend mode, stopAt ISO timestamp, and any active conflicts.
 
+### `n8ncli update` / `n8ncli upgrade`
+```bash
+n8ncli update [--check] [--force] [--changelog] [--tag <tag>]
+```
+- Upgrades `n8ncli` globally via npm to the latest published release.
+- **`--check`**: Queries the npm registry and checks whether a newer version is available without installing.
+- **`--force`**: Forces reinstallation even if already on the latest version.
+- **`--changelog`**: Displays recent release notes / what changed along with update status.
+- **`--tag <tag>`**: Targets a specific npm distribution tag or version (defaults to `latest`).
+- **Update Alert**: After running CLI commands, `n8ncli` performs non-blocking periodic checks against npm (cached up to 6 hours) and alerts the user in `stderr` when a new version is available. Disabled in CI or when `N8N_NO_UPDATE_NOTIFIER` is set.
+
+### `n8ncli changelog` / `n8ncli whatsnew` / `n8ncli changes`
+```bash
+n8ncli changelog [--all] [--limit <n>] [--from <version>]
+```
+- Inspects release notes and shows what changed across versions directly from the CLI.
+- **`--from <version>`**: Filters and shows all changes introduced since a specific version (e.g. `n8ncli changelog --from 1.2.41`).
+- **`--limit <n>`**: Limits the number of recent release entries shown (defaults to `5`).
+- **`--all`**: Displays the full version changelog history.
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies

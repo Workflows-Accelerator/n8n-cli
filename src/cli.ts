@@ -28,6 +28,8 @@ import { datatablesCommand } from './commands/datatables.js';
 import { logsCommand } from './commands/logs.js';
 import { debugCommand } from './commands/debug.js';
 import { webhooksCommand } from './commands/webhooks.js';
+import { updateCommand } from './commands/update.js';
+import { checkForUpdate, displayUpdateNotification } from './update-check.js';
 
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +52,19 @@ program
     // Set JSON mode if --json flag was passed
     const json = !!(thisCommand.opts().json || actionCommand.opts().json);
     setJsonMode(json);
+  })
+  .hook('postAction', async (thisCommand, actionCommand) => {
+    const cmdName = actionCommand.name();
+    const updateCmds = ['update', 'upgrade', 'changelog', 'whatsnew', 'changes'];
+    if (updateCmds.includes(cmdName)) return;
+    if (thisCommand.opts().json || actionCommand.opts().json) return;
+
+    try {
+      const updateInfo = await checkForUpdate(pkg.version, false);
+      if (updateInfo && updateInfo.updateAvailable) {
+        displayUpdateNotification(updateInfo);
+      }
+    } catch {}
   });
 
 // Register all commands
@@ -78,6 +93,7 @@ layoutCommand(program);
 liveCommand(program);
 datatablesCommand(program);
 webhooksCommand(program);
+updateCommand(program);
 
 
 // Parse arguments asynchronously
