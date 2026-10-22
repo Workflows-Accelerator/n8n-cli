@@ -2,6 +2,10 @@
 
 All notable changes to `n8ncli` (@workflows-accelerator/n8n-cli) are documented in this file.
 
+## [1.2.44] - 2026-10-23
+### Changed
+- **Enhanced Agent Skill Self-Usage & Directives**: Updated skill description with strict trigger directives ensuring AI agents automatically load the `n8ncli` skill whenever n8n is mentioned, and explicitly prohibiting falling back to raw MCP calls or the official global `n8n` CLI.
+
 ## [1.2.43] - 2026-10-23
 ### Added
 - **New Version Alert**: Automated, non-blocking check alerting users when a new version of `n8ncli` is published on npm.

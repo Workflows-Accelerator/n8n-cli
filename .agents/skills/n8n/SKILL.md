@@ -1,9 +1,10 @@
 ---
 name: n8ncli
-version: 1.2.43
+version: 1.2.44
 description: |
-  Manage, sync, validate, and test n8n workflows locally in this repository using the n8ncli tool.
-  Supports workflow-as-code syncing, local schema validation, testing/execution, and standards checking.
+  CRITICAL: Always load this skill whenever "n8n", workflows, nodes, credentials, or n8n automations are mentioned, requested, or worked on in this repository.
+  This skill provides the mandatory and comprehensive toolset (n8ncli) for managing n8n workflows as code, pulling/pushing, local schema validation, Dagre auto-layout, testing/execution, node parameter inspection, and standards linting.
+  NEVER use the official global `n8n` CLI or raw MCP tools directly—always use `n8ncli` as instructed in this skill.
 license: ISC
 compatibility: claude-code antigravity
 allowed-tools:
@@ -16,6 +17,13 @@ allowed-tools:
 ---
 
 # Skill: Managing n8n Workflows with n8ncli
+
+## ⚠️ MANDATORY DIRECTIVE: ALWAYS USE n8ncli FOR ALL n8n TASKS
+
+Whenever the user mentions **n8n**, asks to view, edit, create, test, pull, or push workflows, or works with n8n nodes, automations, or credentials:
+1. **NEVER use the official `n8n` CLI binary directly:** The official `n8n` global binary does not support workflow-as-code TypeScript building, repository synchronization, Dagre auto-layout, or local schema validation.
+2. **NEVER call raw MCP endpoints directly:** Do not make direct, uncoordinated MCP tool calls (e.g. calling `update_workflow`, `get_workflow_details`, or `create_workflow_from_code` in isolation). `n8ncli` coordinates state tracking (`sync-state.json`), base caching, conflict detection, AST diffing, and PostgreSQL database updates.
+3. **ALWAYS use `n8ncli`:** All operations must be driven through `n8ncli` commands (`n8ncli pull`, `n8ncli push`, `n8ncli diff`, `n8ncli validate`, `n8ncli test`, `n8ncli exec`, `n8ncli nodes`, `n8ncli layout`, `n8ncli environments`, etc.).
 
 This skill enables the AI agent to manage, sync, validate, and test n8n workflows locally in this repository using the `n8ncli` tool.
 

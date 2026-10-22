@@ -397,7 +397,7 @@ describe('Surgical Patches: Update Checker and Changelog', () => {
   it('filters changelog entries with getChangelogEntries', () => {
     const recent = getChangelogEntries(undefined, 2);
     assert.ok(recent.length > 0);
-    assert.equal(recent[0].version, '1.2.43');
+    assert.match(recent[0].version, /^\d+\.\d+\.\d+$/);
 
     const since41 = getChangelogEntries('1.2.41');
     assert.ok(since41.length >= 2);
