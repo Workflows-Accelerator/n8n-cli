@@ -30,6 +30,10 @@ function getPackageVersion(): string {
   return '1.0.0';
 }
 
+export function getNpmExecutable(platform: string = process.platform): string {
+  return platform === 'win32' ? 'npm.cmd' : 'npm';
+}
+
 export function updateCommand(program: Command) {
   program
     .command('update')
@@ -83,7 +87,8 @@ export function updateCommand(program: Command) {
         const args = ['install', '-g', `@workflows-accelerator/n8n-cli@${options.tag || 'latest'}`];
         output.log(`Running: npm ${args.join(' ')}\n`);
 
-        const res = spawnSync('npm', args, { stdio: 'inherit' });
+        const npmCmd = getNpmExecutable();
+        const res = spawnSync(npmCmd, args, { stdio: 'inherit' });
         if (res.status === 0) {
           output.log(`\n✨ Successfully updated n8ncli to v${targetVersion}!`);
           const changes = getChangelogEntries(currentVersion, 3);

@@ -40,6 +40,7 @@ When making changes to this codebase, AI agents **MUST** follow these steps to e
     - Edit
     - Grep
     - Glob
+    - Bash
     - AskUserQuestion
   ---
   ```

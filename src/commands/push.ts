@@ -773,12 +773,33 @@ export function pushCommand(program: Command) {
               // MCP Fallback
               if (!updatedSuccessfully) {
                 try {
-                  if (rename.name) {
-                    await mcp.callTool('update_workflow', {
+                  let remoteDetails: any = null;
+                  try {
+                    const remoteDetailsRes = await mcp.callToolAndGetJson('get_workflow_details', {
                       workflowId: rename.id,
-                      operations: [{ type: 'setWorkflowMetadata', name: rename.name }],
+                      id: rename.id,
                     });
+                    remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
+                  } catch (e) {}
+
+                  const operations = generateWorkflowUpdateOperations(workflowJson, remoteDetails);
+                  if (rename.name && !operations.some((op: any) => op.type === 'setWorkflowMetadata')) {
+                    operations.unshift({ type: 'setWorkflowMetadata', name: rename.name });
                   }
+
+                  if (operations.length > 0) {
+                    const batches = chunkOperations(operations, 100);
+                    for (const batch of batches) {
+                      const updateRes = await mcp.callToolAndGetJson('update_workflow', {
+                        workflowId: rename.id,
+                        operations: batch,
+                      });
+                      if (updateRes && (updateRes.error || updateRes.isError)) {
+                        throw new Error(`MCP update_workflow error: ${updateRes.error || JSON.stringify(updateRes)}`);
+                      }
+                    }
+                  }
+
                   if (isMove && newFolderId !== undefined) {
                     await mcp.callTool('move_workflows_to_folder', {
                       workflowIds: [rename.id],

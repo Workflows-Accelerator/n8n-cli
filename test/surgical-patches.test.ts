@@ -6,7 +6,9 @@ import {
   isTargetScoped,
 } from '../src/sync-state.js';
 import { validateAndTrimCredential, sanitizeInstanceUrl, getN8nCredentialLinks } from '../src/config.js';
-import { parseSemver, isNewerVersion, parseChangelog, getChangelogEntries } from '../src/update-check.js';
+import { parseSemver, isNewerVersion, parseChangelog, getChangelogEntries, checkForUpdate, saveUpdateCache, loadUpdateCache } from '../src/update-check.js';
+import { getNpmExecutable } from '../src/commands/update.js';
+import { getSkillContent } from '../src/commands/import-skill.js';
 
 describe('Surgical Patches: Bug 2 - AST Diff Engine (generateWorkflowUpdateOperations)', () => {
   it('generates updateNodeParameters when node parameters differ', () => {
@@ -215,6 +217,33 @@ describe('Surgical Patches: Bug 2 - AST Diff Engine (generateWorkflowUpdateOpera
     });
   });
 
+  it('generates both setWorkflowMetadata and updateNodeParameters when renaming workflow and editing nodes simultaneously', () => {
+    const remote = {
+      name: 'Original Flow',
+      nodes: [
+        { name: 'Trigger', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [0, 0], parameters: { path: 'old' } }
+      ],
+      connections: {},
+    };
+
+    const local = {
+      name: 'Renamed Flow',
+      nodes: [
+        { name: 'Trigger', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1, position: [0, 0], parameters: { path: 'new' } }
+      ],
+      connections: {},
+    };
+
+    const ops = generateWorkflowUpdateOperations(local, remote);
+    const metaOp = ops.find(o => o.type === 'setWorkflowMetadata');
+    const paramOp = ops.find(o => o.type === 'updateNodeParameters');
+
+    assert.ok(metaOp, 'Must include setWorkflowMetadata operation');
+    assert.equal(metaOp?.name, 'Renamed Flow');
+    assert.ok(paramOp, 'Must include updateNodeParameters operation');
+    assert.deepEqual(paramOp?.parameters, { path: 'new' });
+  });
+
   it('chunks operations into batches of at most 100 operations', () => {
     const ops = Array.from({ length: 250 }, (_, i) => ({
       type: 'setNodePosition',
@@ -402,6 +431,39 @@ describe('Surgical Patches: Update Checker and Changelog', () => {
     const since41 = getChangelogEntries('1.2.41');
     assert.ok(since41.length >= 2);
     assert.ok(since41.every(e => isNewerVersion(e.version, '1.2.41')));
+  });
+
+  it('returns empty array when changelog fromVersion has no newer versions', () => {
+    // There are no versions newer than 999.0.0
+    const emptyResult = getChangelogEntries('999.0.0');
+    assert.deepEqual(emptyResult, []);
+  });
+
+  it('updates cache lastChecked timestamp even when fetch fails in offline environment', async () => {
+    const eightHoursAgo = Date.now() - (8 * 60 * 60 * 1000);
+    saveUpdateCache({ lastChecked: eightHoursAgo, latestVersion: '1.2.40' });
+
+    // Mock fetchFn that simulates network failure / offline
+    const failingFetch = async () => null;
+    await checkForUpdate('1.2.44', false, failingFetch);
+
+    const updated = loadUpdateCache();
+    assert.ok(updated.lastChecked > eightHoursAgo);
+    assert.ok(Date.now() - updated.lastChecked < 5000);
+    assert.equal(updated.latestVersion, '1.2.40');
+  });
+
+  it('resolves correct npm executable name on Windows and Unix platforms', () => {
+    assert.equal(getNpmExecutable('win32'), 'npm.cmd');
+    assert.equal(getNpmExecutable('linux'), 'npm');
+    assert.equal(getNpmExecutable('darwin'), 'npm');
+  });
+});
+
+describe('Surgical Patches: Agent Skill Tool Whitelist', () => {
+  it('includes Bash in allowed-tools so AI agents can execute n8ncli commands', () => {
+    const content = getSkillContent({} as any);
+    assert.match(content, /allowed-tools:\s*[\s\S]*-\s*Bash/);
   });
 });
 

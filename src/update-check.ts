@@ -111,7 +111,8 @@ const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
  */
 export async function checkForUpdate(
   currentVersion: string,
-  forceCheck: boolean = false
+  forceCheck: boolean = false,
+  fetchFn: (packageName?: string, timeoutMs?: number) => Promise<string | null> = fetchLatestVersion
 ): Promise<UpdateCheckResult | null> {
   if (process.env.N8N_NO_UPDATE_NOTIFIER || process.env.CI) {
     return null;
@@ -122,12 +123,12 @@ export async function checkForUpdate(
   let latest = cache.latestVersion;
 
   if (forceCheck || now - cache.lastChecked > CHECK_INTERVAL_MS || !latest) {
-    const fetched = await fetchLatestVersion();
+    const fetched = await fetchFn();
     if (fetched) {
       latest = fetched;
       saveUpdateCache({ lastChecked: now, latestVersion: fetched });
-    } else if (!cache.lastChecked) {
-      saveUpdateCache({ lastChecked: now, latestVersion: currentVersion });
+    } else {
+      saveUpdateCache({ lastChecked: now, latestVersion: cache.latestVersion || currentVersion });
     }
   }
 
@@ -233,8 +234,7 @@ export function getChangelogEntries(fromVersion?: string, limit: number = 5): Re
     const raw = fs.readFileSync(p, 'utf-8');
     const all = parseChangelog(raw);
     if (fromVersion) {
-      const filtered = all.filter(e => isNewerVersion(e.version, fromVersion));
-      if (filtered.length > 0) return filtered;
+      return all.filter(e => isNewerVersion(e.version, fromVersion)).slice(0, limit);
     }
     return all.slice(0, limit);
   } catch {
