@@ -1,6 +1,6 @@
 ---
 name: n8ncli
-version: 1.2.44
+version: 1.2.45
 description: |
   CRITICAL: Always load this skill whenever "n8n", workflows, nodes, credentials, or n8n automations are mentioned, requested, or worked on in this repository.
   This skill provides the mandatory and comprehensive toolset (n8ncli) for managing n8n workflows as code, pulling/pushing, local schema validation, Dagre auto-layout, testing/execution, node parameter inspection, and standards linting.

@@ -2,6 +2,15 @@
 
 All notable changes to `n8ncli` (@workflows-accelerator/n8n-cli) are documented in this file.
 
+## [1.2.45] - 2026-10-23
+### Fixed
+- **Windows Update Spawning**: Added `{ shell: true }` when spawning `npm.cmd` on Windows to prevent `EINVAL` crashes (CVE-2024-27980).
+- **Update Tag Sanitization**: Strictly validated distribution tags against `/^[a-zA-Z0-9_.-]+$/` to prevent shell command injection.
+- **Offline Update Check Interval**: Updated cache `lastChecked` timestamp on network failure to avoid 2s delay cascade on subsequent invocations.
+- **MCP Rename State Consistency**: Synchronized node AST diffs during workflow rename and safely prevented mass `addNode` collisions when remote details are unavailable.
+- **Foreign Changelog Spoofing**: Added verification to ensure `findChangelogPath` only reads changelog files belonging to `n8ncli`.
+- **Agent Skill Permissions**: Added `- Bash` to `allowed-tools` in `SKILL.md` so agent runners can invoke CLI commands.
+
 ## [1.2.44] - 2026-10-23
 ### Changed
 - **Enhanced Agent Skill Self-Usage & Directives**: Updated skill description with strict trigger directives ensuring AI agents automatically load the `n8ncli` skill whenever n8n is mentioned, and explicitly prohibiting falling back to raw MCP calls or the official global `n8n` CLI.
