@@ -88,6 +88,7 @@ export async function fetchLatestVersion(
 ): Promise<string | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (timer.unref) timer.unref();
   try {
     const url = `https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`;
     const res = await fetch(url, {
@@ -128,7 +129,8 @@ export async function checkForUpdate(
       latest = fetched;
       saveUpdateCache({ lastChecked: now, latestVersion: fetched });
     } else {
-      saveUpdateCache({ lastChecked: now, latestVersion: cache.latestVersion || currentVersion });
+      latest = cache.latestVersion || currentVersion;
+      saveUpdateCache({ lastChecked: now, latestVersion: latest });
     }
   }
 
@@ -174,17 +176,36 @@ export function displayUpdateNotification(info: UpdateCheckResult): void {
 }
 
 /**
+ * Verifies if a given CHANGELOG.md file belongs to n8ncli.
+ */
+export function isN8nCliChangelog(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const content = fs.readFileSync(filePath, 'utf-8').slice(0, 1000);
+    return content.includes('n8ncli') || content.includes('@workflows-accelerator/n8n-cli') || content.includes('n8n-cli');
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Finds local CHANGELOG.md file in the package or repo.
  */
 export function findChangelogPath(): string | null {
   const candidates = [
     path.resolve(__dirname, '../CHANGELOG.md'),
     path.resolve(__dirname, '../../CHANGELOG.md'),
-    path.resolve(process.cwd(), 'CHANGELOG.md'),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
+
+  // Fallback to process.cwd() only if it is verified to be the n8ncli changelog
+  const cwdCandidate = path.resolve(process.cwd(), 'CHANGELOG.md');
+  if (isN8nCliChangelog(cwdCandidate)) {
+    return cwdCandidate;
+  }
+
   return null;
 }
 

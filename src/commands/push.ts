@@ -782,7 +782,10 @@ export function pushCommand(program: Command) {
                     remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
                   } catch (e) {}
 
-                  const operations = generateWorkflowUpdateOperations(workflowJson, remoteDetails);
+                  let operations: any[] = [];
+                  if (remoteDetails) {
+                    operations = generateWorkflowUpdateOperations(workflowJson, remoteDetails);
+                  }
                   if (rename.name && !operations.some((op: any) => op.type === 'setWorkflowMetadata')) {
                     operations.unshift({ type: 'setWorkflowMetadata', name: rename.name });
                   }
@@ -1093,6 +1096,10 @@ export function pushCommand(program: Command) {
                       id: entry.id,
                     });
                     remoteDetails = remoteDetailsRes.workflow || remoteDetailsRes;
+                  }
+
+                  if (!remoteDetails) {
+                    throw new Error(`MCP get_workflow_details returned no details for workflow '${entry.id}'`);
                   }
 
                   const operations = generateWorkflowUpdateOperations(workflowJson, remoteDetails);

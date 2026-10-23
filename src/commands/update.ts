@@ -34,6 +34,17 @@ export function getNpmExecutable(platform: string = process.platform): string {
   return platform === 'win32' ? 'npm.cmd' : 'npm';
 }
 
+export function isValidNpmTag(tag: string): boolean {
+  return /^[a-zA-Z0-9_.-]+$/.test(tag);
+}
+
+export function getNpmSpawnOptions(platform: string = process.platform): { stdio: 'inherit'; shell: boolean } {
+  return {
+    stdio: 'inherit',
+    shell: platform === 'win32',
+  };
+}
+
 export function updateCommand(program: Command) {
   program
     .command('update')
@@ -83,12 +94,18 @@ export function updateCommand(program: Command) {
           return;
         }
 
+        if (options.tag && !isValidNpmTag(options.tag)) {
+          output.error(`Invalid npm tag or version: "${options.tag}". Only alphanumeric characters, dots, dashes, and underscores are allowed.`);
+          process.exit(1);
+        }
+
         output.log(`Updating @workflows-accelerator/n8n-cli to ${options.tag === 'latest' && latestVersion ? `v${latestVersion}` : options.tag}...`);
         const args = ['install', '-g', `@workflows-accelerator/n8n-cli@${options.tag || 'latest'}`];
         output.log(`Running: npm ${args.join(' ')}\n`);
 
         const npmCmd = getNpmExecutable();
-        const res = spawnSync(npmCmd, args, { stdio: 'inherit' });
+        const spawnOpts = getNpmSpawnOptions();
+        const res = spawnSync(npmCmd, args, spawnOpts);
         if (res.status === 0) {
           output.log(`\n✨ Successfully updated n8ncli to v${targetVersion}!`);
           const changes = getChangelogEntries(currentVersion, 3);

@@ -6,8 +6,8 @@ import {
   isTargetScoped,
 } from '../src/sync-state.js';
 import { validateAndTrimCredential, sanitizeInstanceUrl, getN8nCredentialLinks } from '../src/config.js';
-import { parseSemver, isNewerVersion, parseChangelog, getChangelogEntries, checkForUpdate, saveUpdateCache, loadUpdateCache } from '../src/update-check.js';
-import { getNpmExecutable } from '../src/commands/update.js';
+import { parseSemver, isNewerVersion, parseChangelog, getChangelogEntries, checkForUpdate, saveUpdateCache, loadUpdateCache, isN8nCliChangelog } from '../src/update-check.js';
+import { getNpmExecutable, isValidNpmTag, getNpmSpawnOptions } from '../src/commands/update.js';
 import { getSkillContent } from '../src/commands/import-skill.js';
 
 describe('Surgical Patches: Bug 2 - AST Diff Engine (generateWorkflowUpdateOperations)', () => {
@@ -457,6 +457,73 @@ describe('Surgical Patches: Update Checker and Changelog', () => {
     assert.equal(getNpmExecutable('win32'), 'npm.cmd');
     assert.equal(getNpmExecutable('linux'), 'npm');
     assert.equal(getNpmExecutable('darwin'), 'npm');
+  });
+
+  it('configures spawn options to require shell: true on Windows and shell: false on Unix', () => {
+    assert.deepEqual(getNpmSpawnOptions('win32'), { stdio: 'inherit', shell: true });
+    assert.deepEqual(getNpmSpawnOptions('linux'), { stdio: 'inherit', shell: false });
+    assert.deepEqual(getNpmSpawnOptions('darwin'), { stdio: 'inherit', shell: false });
+  });
+
+  it('validates npm distribution tags to prevent shell injection', () => {
+    // Valid tags
+    assert.equal(isValidNpmTag('latest'), true);
+    assert.equal(isValidNpmTag('beta'), true);
+    assert.equal(isValidNpmTag('next'), true);
+    assert.equal(isValidNpmTag('1.2.44'), true);
+    assert.equal(isValidNpmTag('2.0.0-rc.1'), true);
+    assert.equal(isValidNpmTag('v1.0.0'), true);
+
+    // Injection / malformed tags
+    assert.equal(isValidNpmTag('latest & calc.exe'), false);
+    assert.equal(isValidNpmTag('1.2.44; rm -rf /'), false);
+    assert.equal(isValidNpmTag('latest | dir'), false);
+    assert.equal(isValidNpmTag('tag with space'), false);
+    assert.equal(isValidNpmTag('tag"quote'), false);
+    assert.equal(isValidNpmTag('$(whoami)'), false);
+    assert.equal(isValidNpmTag('`calc`'), false);
+  });
+
+  it('identifies valid n8ncli changelogs and rejects foreign project changelogs', () => {
+    import('fs').then(fs => {
+      const tempN8nChangelog = '/tmp/n8n-changelog-test.md';
+      const tempOtherChangelog = '/tmp/other-changelog-test.md';
+
+      fs.writeFileSync(tempN8nChangelog, '# Changelog\nAll notable changes to `n8ncli` are documented here.\n## [1.2.44]');
+      fs.writeFileSync(tempOtherChangelog, '# Changelog\nAll notable changes to MyCustomApp backend.\n## [1.0.0]');
+
+      assert.equal(isN8nCliChangelog(tempN8nChangelog), true);
+      assert.equal(isN8nCliChangelog(tempOtherChangelog), false);
+      assert.equal(isN8nCliChangelog('/nonexistent/file.md'), false);
+
+      fs.unlinkSync(tempN8nChangelog);
+      fs.unlinkSync(tempOtherChangelog);
+    });
+  });
+
+  it('does not generate duplicate addNode operations when remoteDetails is null on workflow rename', () => {
+    const local = {
+      name: 'New Workflow Name',
+      nodes: [
+        { name: 'Node 1', type: 'n8n-nodes-base.manualTrigger', typeVersion: 1 },
+        { name: 'Node 2', type: 'n8n-nodes-base.httpRequest', typeVersion: 1 },
+      ],
+      connections: {},
+    };
+
+    // When remoteDetails is null, pure MCP rename should only set metadata
+    const remoteDetails = null;
+    let operations: any[] = [];
+    if (remoteDetails) {
+      operations = generateWorkflowUpdateOperations(local, remoteDetails);
+    }
+    if (!operations.some((op: any) => op.type === 'setWorkflowMetadata')) {
+      operations.unshift({ type: 'setWorkflowMetadata', name: local.name });
+    }
+
+    assert.equal(operations.length, 1);
+    assert.deepEqual(operations[0], { type: 'setWorkflowMetadata', name: 'New Workflow Name' });
+    assert.equal(operations.some((op: any) => op.type === 'addNode'), false);
   });
 });
 
