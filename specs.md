@@ -209,6 +209,16 @@ n8ncli diff [target] [--all] [--summary] [--semantic] [--json]
 - **`--semantic`**: Filters out node coordinate position attributes (`position: [x, y]`) before generating the diff.
 - **`--json`**: Outputs structured JSON summarizing modified, identical, untracked, and errored workflows.
 
+### `n8ncli inspect`
+```bash
+n8ncli inspect <target> [--node <name>] [--json] [--api-key <key>] [--url <url>] [--env <name>]
+```
+- TypeScript-first workflow inspection for AI agents and developers without loading 2,000-line files or executing ad-hoc scripts.
+- Resolves local `.workflow.ts` file paths, names, or remote IDs in-memory with zero disk mutations.
+- **Default view**: Compact topological graph summary displaying workflow metadata, triggers, nodes with types/versions, and directed edges (`A -> [B, C]`).
+- **`--node <name>`**: Isolates and outputs only the targeted node's TypeScript SDK `node({...})` block and immediate upstream/downstream connections. Returns a clear error listing available node names on mismatch.
+- **`--json`**: Returns structured JSON containing `{ id, name, active, triggers, nodes, connections, tsCode }` (with `tsCode` scoped to the node if `--node` is passed).
+
 ### `n8ncli validate`
 ```bash
 n8ncli validate [files...] [--lint] [--upgrade-nodes] [--fix] [--only-modified] [--fail-on-warnings]
