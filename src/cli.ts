@@ -46,6 +46,8 @@ program
   .option('--json', 'output structured JSON for program integration', false)
   .option('--env <name>', 'specify environment name')
   .option('--config <path>', 'explicit path to n8n-cli.json configuration file')
+  .option('--mcp-command <cmd>', 'override MCP server start command')
+  .option('--access-token <token>', 'override n8n access token')
   .hook('preAction', (thisCommand, actionCommand) => {
     // Set verbose mode if --verbose flag was passed to either main program or subcommand
     const verbose = !!(thisCommand.opts().verbose || actionCommand.opts().verbose);

@@ -116,7 +116,7 @@ my-project/
 
 ## 4. Commands Reference
 
-All commands support global options: `--verbose` for detailed stderr logging, `--config <path>` to explicitly specify the configuration file path, and `--json` to format output as structured JSON. Additionally, commands automatically run local workflow conversion from `.json` files to `.workflow.ts` when targets or directories are parsed.
+All commands support global options: `--verbose` for detailed stderr logging, `--config <path>` to explicitly specify the configuration file path, `--json` to format output as structured JSON, and `--mcp-command <cmd>` / `--access-token <token>` overrides. Additionally, commands automatically run local workflow conversion from `.json` files to `.workflow.ts` when targets or directories are parsed.
 
 ### `n8ncli init`
 ```bash
@@ -214,10 +214,11 @@ n8ncli diff [target] [--all] [--summary] [--semantic] [--json]
 n8ncli inspect <target> [--node <name>] [--json] [--api-key <key>] [--url <url>] [--env <name>]
 ```
 - TypeScript-first workflow inspection for AI agents and developers without loading 2,000-line files or executing ad-hoc scripts.
-- Resolves local `.workflow.ts` file paths, names, or remote IDs in-memory with zero disk mutations.
-- **Default view**: Compact topological graph summary displaying workflow metadata, triggers, nodes with types/versions, and directed edges (`A -> [B, C]`).
+- Resolves local `.workflow.ts` or `.json` file paths, names, or remote IDs in-memory with zero disk mutations.
+- Inherits global CLI flags (`--config <path>`, `--mcp-command <cmd>`, `--access-token <token>`, `--json`).
+- **Default view**: Compact topological graph summary displaying workflow metadata, triggers, nodes with types/versions, disabled status (`[DISABLED]`), parameter previews (`url: ...`, `jsCode: ...`), and directed edges including multi-branch outputs (`main[0]`, `main[1]`) and error connections (`error -> [...]`).
 - **`--node <name>`**: Isolates and outputs only the targeted node's TypeScript SDK `node({...})` block and immediate upstream/downstream connections. Returns a clear error listing available node names on mismatch.
-- **`--json`**: Returns structured JSON containing `{ id, name, active, triggers, nodes, connections, tsCode }` (with `tsCode` scoped to the node if `--node` is passed).
+- **`--json`**: Returns structured JSON containing `{ id, name, active, source, filePath, triggers, nodes, connections, upstream, downstream, targetNode?, tsCode }`. `nodes` contains compact metadata (`name`, `type`, `typeVersion`, `position`, `disabled`, `notes`, `downstream`, `summary`) without duplicating large `parameters` payloads; `targetNode` retains full parameters when `--node` is requested, and `tsCode` contains the corresponding TypeScript SDK code.
 
 ### `n8ncli validate`
 ```bash
