@@ -64,6 +64,7 @@ This skill enables the AI agent to manage, sync, validate, and test n8n workflow
 - `n8ncli diff [target] [--all] [--summary] [--semantic] [--json]`: Show code differences between local workflow files and remote n8n versions (specify target workflow file, ID, or folder path; use `--semantic` to ignore coordinate/position differences).
 
 ### Verification, Debugging & Testing
+- `n8ncli inspect <target> [--node <name>] [--json]`: Inspect workflow topology, extract single-node TypeScript SDK blocks and upstream/downstream connections, or output JSON `tsCode` without opening 2,000-line files.
 - `n8ncli validate [files...] [--lint] [--upgrade-nodes] [--fix] [--only-modified] [--fail-on-warnings]`: Validate syntax, schema, node versions, expression node references, and style standards. Use `--upgrade-nodes` or `--fix` to automatically bump nodes to their latest typeVersion. Exit code 2 is triggered on warnings if --fail-on-warnings is specified.
 - `n8ncli exec <file-or-id> [--mode manual|production] [--input <json-or-file>]`: Execute workflow.
 - `n8ncli test <file-or-id> [--pin-data <file>]`: Test run with mock pin data.

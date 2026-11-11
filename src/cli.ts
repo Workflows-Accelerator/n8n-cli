@@ -11,6 +11,7 @@ import { pushCommand } from './commands/push.js';
 import { validateCommand } from './commands/validate.js';
 import { statusCommand } from './commands/status.js';
 import { diffCommand } from './commands/diff.js';
+import { inspectCommand } from './commands/inspect.js';
 import { execCommand } from './commands/exec.js';
 import { testCommand } from './commands/test.js';
 import { executionCommand } from './commands/execution.js';
@@ -45,6 +46,8 @@ program
   .option('--json', 'output structured JSON for program integration', false)
   .option('--env <name>', 'specify environment name')
   .option('--config <path>', 'explicit path to n8n-cli.json configuration file')
+  .option('--mcp-command <cmd>', 'override MCP server start command')
+  .option('--access-token <token>', 'override n8n access token')
   .hook('preAction', (thisCommand, actionCommand) => {
     // Set verbose mode if --verbose flag was passed to either main program or subcommand
     const verbose = !!(thisCommand.opts().verbose || actionCommand.opts().verbose);
@@ -76,6 +79,7 @@ pushCommand(program);
 validateCommand(program);
 statusCommand(program);
 diffCommand(program);
+inspectCommand(program);
 execCommand(program);
 testCommand(program);
 executionCommand(program);
