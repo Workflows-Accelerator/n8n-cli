@@ -5,7 +5,7 @@ import path from 'path';
 import os from 'os';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
-import { inspectWorkflow, formatTopologyOutput, formatNodeOutput, extractNodeSnippetFromTs, findConnectionsForNode } from '../src/commands/inspect.js';
+import { inspectWorkflow, formatTopologyOutput, formatNodeOutput, extractNodeSnippetFromTs, findConnectionsForNode, generateSingleNodeSnippet } from '../src/commands/inspect.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const codeTemplatePath = path.resolve(__dirname, '../templates/workflow_examples_ref/Code/Code Template.workflow.ts');
@@ -644,6 +644,247 @@ export default wf.add(n1);
       } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('Remediation: Lexical Scanner & Snippet Scoping (Issue #1)', () => {
+    const logicTemplatePath = path.resolve(__dirname, '../templates/workflow_examples_ref/Logic/Logic Template.workflow.ts');
+    const aiPromptTemplatePath = path.resolve(__dirname, '../templates/workflow_examples_ref/AI Prompts/AI Prompt Template.workflow.ts');
+
+    it('extracts merge() declaration without corruption when connection-chain merge() calls exist', async () => {
+      // Direct file test on real Logic Template
+      const result = await inspectWorkflow({
+        target: logicTemplatePath,
+        node: 'Merge Results',
+      });
+
+      assert.equal(result.name, 'Logic Template');
+      assert.ok(result.targetNode);
+      assert.equal(result.targetNode.name, 'Merge Results');
+      assert.equal(result.targetNode.type, 'n8n-nodes-base.merge');
+      // Must extract merge({...}) and not synthetic node({...})
+      assert.ok(result.tsCode.includes('const merge_Results = merge({'));
+      assert.ok(result.tsCode.includes("name: 'Merge Results'"));
+      assert.ok(!result.tsCode.includes("type: 'n8n-nodes-base.merge'"));
+
+      // Unit test on code with both declaration merge({ ... }) and connection-chain merge(ref, { ... })
+      const syntheticSource = `
+const merge_Results = merge({
+  version: 3.2,
+  config: { name: 'Merge Results', parameters: { numberInputs: 3 } }
+});
+const wf = workflow('w1', 'Chain Workflow');
+export default wf.add(merge(merge_Results, { input0: startNode }));
+`;
+      const snippet = extractNodeSnippetFromTs(syntheticSource, 'Merge Results');
+      assert.ok(snippet, 'Snippet should be found');
+      assert.ok(snippet.includes('const merge_Results = merge({'));
+      assert.ok(!snippet.includes('wf.add'));
+    });
+
+    it('extracts languageModel() subnode with credentials intact from .workflow.ts and .json', async () => {
+      // 1. Real AI Prompt Template .workflow.ts test
+      const resultTs = await inspectWorkflow({
+        target: aiPromptTemplatePath,
+        node: 'Google Gemini Model',
+      });
+
+      assert.equal(resultTs.name, 'AI Prompt Template');
+      assert.ok(resultTs.targetNode);
+      assert.equal(resultTs.targetNode.name, 'Google Gemini Model');
+      assert.ok(resultTs.tsCode.includes('languageModel({'));
+      assert.ok(resultTs.tsCode.includes('newCredential('));
+      assert.ok(resultTs.tsCode.includes('googlePalmApi'));
+      assert.ok(!resultTs.tsCode.includes('const google_gemini_model = node({'));
+
+      // 2. In-memory .json workflow conversion test
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8ncli-inspect-ai-json-'));
+      const jsonFilePath = path.join(tempDir, 'ai-flow.json');
+      const mockJson = {
+        name: 'AI JSON Workflow',
+        nodes: [
+          {
+            name: 'Google Gemini Model',
+            type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
+            typeVersion: 1,
+            position: [500, 260],
+            parameters: { modelName: 'models/gemini-3.1-flash' },
+            credentials: { googlePalmApi: { id: 'cred-123', name: 'Gemini Key' } },
+          },
+          {
+            name: 'AI Agent',
+            type: '@n8n/n8n-nodes-langchain.agent',
+            typeVersion: 1.7,
+            position: [700, 260],
+            parameters: {},
+          },
+        ],
+        connections: {
+          'Google Gemini Model': {
+            ai_languageModel: [[{ node: 'AI Agent', type: 'ai_languageModel', index: 0 }]],
+          },
+        },
+      };
+      fs.writeFileSync(jsonFilePath, JSON.stringify(mockJson, null, 2), 'utf-8');
+
+      try {
+        const resultJson = await inspectWorkflow({
+          target: jsonFilePath,
+          node: 'Google Gemini Model',
+        });
+
+        assert.equal(resultJson.name, 'AI JSON Workflow');
+        assert.ok(resultJson.targetNode);
+        assert.ok(resultJson.targetNode.credentials);
+        assert.ok(resultJson.tsCode.includes('languageModel({'));
+        assert.ok(resultJson.tsCode.includes('credentials:'));
+        assert.ok(resultJson.tsCode.includes('googlePalmApi'));
+        assert.ok(!fs.existsSync(path.join(tempDir, 'ai-flow.workflow.ts')));
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('extracts sticky(...) declaration by name in options object from .workflow.ts and .json', async () => {
+      // 1. In .workflow.ts source
+      const tsWithSticky = `
+const start = trigger({ type: 'n8n-nodes-base.manualTrigger', version: 1, config: { name: 'Start' } });
+const sticky_Note = sticky('Note body content', [start], { name: 'Sticky Note', width: 300, height: 200, color: 4 });
+const wf = workflow('wf-sticky', 'Sticky Flow');
+export default wf.add(start);
+`;
+      const snippet = extractNodeSnippetFromTs(tsWithSticky, 'Sticky Note');
+      assert.ok(snippet, 'Sticky snippet should be extracted');
+      assert.ok(snippet.includes('sticky('));
+      assert.ok(snippet.includes('Sticky Note'));
+      assert.ok(snippet.includes('Note body content'));
+
+      // 2. From .json workflow
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8ncli-inspect-sticky-json-'));
+      const jsonFilePath = path.join(tempDir, 'sticky-flow.json');
+      const mockStickyJson = {
+        name: 'Sticky JSON Flow',
+        nodes: [
+          {
+            name: 'Sticky Note',
+            type: 'n8n-nodes-base.stickyNote',
+            typeVersion: 1,
+            position: [100, 100],
+            parameters: { content: 'Note body content', width: 250, height: 150 },
+          },
+        ],
+        connections: {},
+      };
+      fs.writeFileSync(jsonFilePath, JSON.stringify(mockStickyJson, null, 2), 'utf-8');
+
+      try {
+        const resultSticky = await inspectWorkflow({
+          target: jsonFilePath,
+          node: 'Sticky Note',
+        });
+
+        assert.ok(resultSticky.tsCode.includes('sticky('));
+        assert.ok(resultSticky.tsCode.includes('Sticky Note'));
+        assert.ok(resultSticky.tsCode.includes('Note body content'));
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('tolerates top-level ESM @n8n/workflow-sdk imports in .workflow.ts with zero disk mutation', async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8ncli-inspect-esm-'));
+      const tsFilePath = path.join(tempDir, 'EsmImport.workflow.ts');
+      const originalTs = `import { workflow, node, trigger } from '@n8n/workflow-sdk';
+import type { WorkflowJSON } from '@n8n/workflow-sdk';
+
+const start = trigger({
+  type: 'n8n-nodes-base.manualTrigger',
+  version: 1,
+  config: { name: 'Manual Trigger' }
+});
+
+const wf = workflow('esm-wf-1', 'ESM Workflow');
+export default wf.add(start);
+`;
+      fs.writeFileSync(tsFilePath, originalTs, 'utf-8');
+
+      try {
+        const result = await inspectWorkflow({
+          target: tsFilePath,
+        });
+
+        assert.equal(result.name, 'ESM Workflow');
+        assert.equal(result.id, 'esm-wf-1');
+        assert.equal(result.nodes.length, 1);
+        assert.equal(result.nodes[0].name, 'Manual Trigger');
+
+        // Zero disk mutation: file must remain identical
+        const fileContentAfter = fs.readFileSync(tsFilePath, 'utf-8');
+        assert.equal(fileContentAfter, originalTs, 'File on disk must not be modified');
+      } finally {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    });
+
+    it('generateSingleNodeSnippet preserves credentials, webhookId, onError, and factory types', () => {
+      // 1. Merge node
+      const mergeSnippet = generateSingleNodeSnippet({
+        name: 'Merge Results',
+        type: 'n8n-nodes-base.merge',
+        typeVersion: 3.2,
+        parameters: { numberInputs: 3 },
+        position: [2380, 184],
+      });
+      assert.ok(mergeSnippet.includes('const merge_Results = merge({'));
+      assert.ok(mergeSnippet.includes('numberInputs: 3'));
+
+      // 2. AI languageModel subnode with credentials
+      const aiSnippet = generateSingleNodeSnippet({
+        name: 'Google Gemini Model',
+        type: '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
+        typeVersion: 1,
+        parameters: { modelName: 'models/gemini-3.1-flash' },
+        credentials: { googlePalmApi: { id: 'cred-123', name: 'Gemini Key' } },
+        position: [500, 260],
+      });
+      assert.ok(aiSnippet.includes('languageModel({'));
+      assert.ok(aiSnippet.includes('googlePalmApi'));
+      assert.ok(aiSnippet.includes('newCredential('));
+
+      // 3. Sticky note
+      const stickySnippet = generateSingleNodeSnippet({
+        name: 'Sticky Note',
+        type: 'n8n-nodes-base.stickyNote',
+        typeVersion: 1,
+        parameters: { content: 'Note text', width: 200, height: 100 },
+        position: [100, 100],
+      });
+      assert.ok(stickySnippet.includes('sticky('));
+      assert.ok(stickySnippet.includes('Note text'));
+      assert.ok(stickySnippet.includes('Sticky Note'));
+
+      // 4. Regular node with credentials, webhookId, onError, retryOnFail
+      const httpSnippet = generateSingleNodeSnippet({
+        name: 'HTTP Call',
+        type: 'n8n-nodes-base.httpRequest',
+        typeVersion: 4.2,
+        parameters: { url: 'https://example.com' },
+        credentials: { httpHeaderAuth: { id: 'cred-auth', name: 'Header Auth' } },
+        webhookId: 'wh-test-99',
+        onError: 'continueRegularOutput',
+        retryOnFail: true,
+        maxTries: 3,
+        waitBetweenTries: 1000,
+        alwaysOutputData: true,
+        executeOnce: true,
+        position: [100, 100],
+      });
+      assert.ok(httpSnippet.includes('node({'));
+      assert.ok(httpSnippet.includes('credentials:'));
+      assert.ok(httpSnippet.includes('httpHeaderAuth'));
+      assert.ok(httpSnippet.includes('webhookId: \'wh-test-99\''));
+      assert.ok(httpSnippet.includes('onError: \'continueRegularOutput\''));
+      assert.ok(httpSnippet.includes('retryOnFail: true'));
     });
   });
 });

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import { parseWorkflowCodeToBuilder, generateWorkflowCode } from '@n8n/workflow-sdk';
+import { parseWorkflowCodeToBuilder, generateWorkflowCode, isMergeNodeType, isStickyNoteType } from '@n8n/workflow-sdk';
 import { findRepoRoot, loadConfig, getConnectionInfo, getWorkflowDetails } from '../config.js';
 import { withMcp } from '../mcp-client.js';
 import { loadSyncState, isTargetScoped } from '../sync-state.js';
@@ -23,6 +23,7 @@ export interface InspectWorkflowOptions {
 }
 
 export interface InspectNodeResult {
+  id?: string;
   name: string;
   type: string;
   typeVersion?: number;
@@ -33,6 +34,15 @@ export interface InspectNodeResult {
   downstream?: string[];
   summary?: string;
   parameters?: Record<string, any>;
+  credentials?: Record<string, any>;
+  webhookId?: string;
+  onError?: string;
+  retryOnFail?: boolean;
+  maxTries?: number;
+  waitBetweenTries?: number;
+  alwaysOutputData?: boolean;
+  executeOnce?: boolean;
+  extendsCredential?: string;
 }
 
 export interface InspectWorkflowResult {
@@ -164,6 +174,24 @@ export function findConnectionsForNode(connections: Record<string, any>, nodeNam
   };
 }
 
+const OBJECT_FIRST_ARG_FACTORIES = new Set([
+  'node',
+  'trigger',
+  'merge',
+  'placeholder',
+  'languageModel',
+  'memory',
+  'tool',
+  'outputParser',
+  'embedding',
+  'embeddings',
+  'vectorStore',
+  'retriever',
+  'documentLoader',
+  'textSplitter',
+  'reranker',
+]);
+
 export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): string | null {
   let i = 0;
   const len = fullCode.length;
@@ -292,6 +320,7 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
     i++; // consume '('
     let curParenDepth = 1;
     let curBraceDepth = 0;
+    let curBracketDepth = 0;
     const braceKeyStack: Array<string | null> = [];
     const callTemplateStack: number[] = [];
     let isTarget = false;
@@ -317,6 +346,8 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
           i = savedI;
           if (
             lastKey === 'name' &&
+            curParenDepth === 1 &&
+            curBracketDepth === 0 &&
             (
               (braceKeyStack.length === 1 && braceKeyStack[0] === null) ||
               (braceKeyStack.length === 2 && braceKeyStack[0] === null && braceKeyStack[1] === 'config')
@@ -358,6 +389,8 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
         if (
           !hasInterp &&
           lastKey === 'name' &&
+          curParenDepth === 1 &&
+          curBracketDepth === 0 &&
           (
             (braceKeyStack.length === 1 && braceKeyStack[0] === null) ||
             (braceKeyStack.length === 2 && braceKeyStack[0] === null && braceKeyStack[1] === 'config')
@@ -458,8 +491,18 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
         lastKey = null;
         lastCallToken = { type: 'PUNCT', value: ')' };
         i++;
+      } else if (ch === '[') {
+        curBracketDepth++;
+        lastKey = null;
+        lastCallToken = { type: 'PUNCT', value: '[' };
+        i++;
+      } else if (ch === ']') {
+        curBracketDepth = Math.max(0, curBracketDepth - 1);
+        lastKey = null;
+        lastCallToken = { type: 'PUNCT', value: ']' };
+        i++;
       } else {
-        if (ch === ',' || ch === ';' || ch === '[' || ch === ']') {
+        if (ch === ',' || ch === ';') {
           lastKey = null;
         }
         lastCallToken = { type: 'PUNCT', value: ch };
@@ -574,7 +617,38 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
 
       const savedI = i;
       skipWhitespaceAndComments();
-      if ((ident === 'node' || ident === 'trigger') && fullCode[i] === '(' && lastToken?.value !== '.') {
+      let isFactoryCall = false;
+      if (lastToken?.value !== '.' && fullCode[i] === '(') {
+        if (OBJECT_FIRST_ARG_FACTORIES.has(ident)) {
+          let lookaheadIdx = i + 1;
+          while (lookaheadIdx < len) {
+            const lc = fullCode[lookaheadIdx];
+            if (isWhitespace(lc)) {
+              lookaheadIdx++;
+              continue;
+            }
+            if (lc === '/' && fullCode[lookaheadIdx + 1] === '/') {
+              lookaheadIdx += 2;
+              while (lookaheadIdx < len && fullCode[lookaheadIdx] !== '\n') lookaheadIdx++;
+              continue;
+            }
+            if (lc === '/' && fullCode[lookaheadIdx + 1] === '*') {
+              lookaheadIdx += 2;
+              while (lookaheadIdx < len && !(fullCode[lookaheadIdx] === '*' && fullCode[lookaheadIdx + 1] === '/')) lookaheadIdx++;
+              lookaheadIdx += 2;
+              continue;
+            }
+            break;
+          }
+          if (fullCode[lookaheadIdx] === '{') {
+            isFactoryCall = true;
+          }
+        } else if (ident === 'sticky') {
+          isFactoryCall = true;
+        }
+      }
+
+      if (isFactoryCall) {
         const callStart = (parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) ? stmtStart : tokenStart;
         const snippet = parseNodeCall(callStart);
         if (snippet) return snippet;
@@ -606,14 +680,128 @@ export function extractNodeSnippetFromTs(fullCode: string, nodeName: string): st
   return null;
 }
 
+function getSubnodeConnectionType(nodeType: string): string | null {
+  const parts = nodeType.split('.');
+  const base = parts[parts.length - 1];
+  const lower = base.toLowerCase();
+  if (lower.startsWith('embeddings') || lower.startsWith('embedding')) return 'ai_embedding';
+  if (lower.startsWith('lm') || lower.includes('chat') || lower.includes('llm') || lower.startsWith('languagemodel')) return 'ai_languageModel';
+  if (lower.startsWith('memory')) return 'ai_memory';
+  if (lower.startsWith('outputparser')) return 'ai_outputParser';
+  if (lower.startsWith('tool')) return 'ai_tool';
+  if (lower.startsWith('retriever')) return 'ai_retriever';
+  if (lower.startsWith('vectorstore')) return 'ai_vectorStore';
+  if (lower.startsWith('document')) return 'ai_document';
+  if (lower.startsWith('textsplitter')) return 'ai_textSplitter';
+  if (lower.startsWith('reranker')) return 'ai_reranker';
+  return null;
+}
+
+const SUBNODE_CONNECTION_TO_BUILDER: Record<string, string> = {
+  ai_languageModel: 'languageModel',
+  ai_memory: 'memory',
+  ai_tool: 'tool',
+  ai_outputParser: 'outputParser',
+  ai_embedding: 'embedding',
+  ai_vectorStore: 'vectorStore',
+  ai_retriever: 'retriever',
+  ai_document: 'documentLoader',
+  ai_textSplitter: 'textSplitter',
+  ai_reranker: 'reranker',
+};
+
 export function generateSingleNodeSnippet(targetNode: InspectNodeResult, isTrigger = false): string {
   const safeName = targetNode.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  const func = isTrigger ? 'trigger' : 'node';
+
+  const rawNode: any = {
+    name: targetNode.name,
+    type: targetNode.type,
+    typeVersion: targetNode.typeVersion || 1,
+    position: targetNode.position || [0, 0],
+    parameters: targetNode.parameters || {},
+  };
+  if (targetNode.id) rawNode.id = targetNode.id;
+  if (targetNode.credentials) rawNode.credentials = targetNode.credentials;
+  if (targetNode.notes) rawNode.notes = targetNode.notes;
+  if (targetNode.notesInFlow !== undefined) rawNode.notesInFlow = targetNode.notesInFlow;
+  if (targetNode.disabled !== undefined) rawNode.disabled = targetNode.disabled;
+  if (targetNode.webhookId) rawNode.webhookId = targetNode.webhookId;
+  if (targetNode.onError) rawNode.onError = targetNode.onError;
+  if (targetNode.retryOnFail !== undefined) rawNode.retryOnFail = targetNode.retryOnFail;
+  if (targetNode.maxTries !== undefined) rawNode.maxTries = targetNode.maxTries;
+  if (targetNode.waitBetweenTries !== undefined) rawNode.waitBetweenTries = targetNode.waitBetweenTries;
+  if (targetNode.alwaysOutputData !== undefined) rawNode.alwaysOutputData = targetNode.alwaysOutputData;
+  if (targetNode.executeOnce !== undefined) rawNode.executeOnce = targetNode.executeOnce;
+
+  const rawJson: any = {
+    name: 'temp',
+    nodes: [rawNode],
+    connections: {},
+  };
+
+  const aiConnType = getSubnodeConnectionType(targetNode.type);
+  if (aiConnType) {
+    rawJson.nodes.push({
+      name: '__SyntheticAgent__',
+      type: '@n8n/n8n-nodes-langchain.agent',
+      typeVersion: 1.7,
+      position: [targetNode.position ? targetNode.position[0] + 200 : 200, targetNode.position ? targetNode.position[1] : 0],
+      parameters: {},
+    });
+    rawJson.connections[targetNode.name] = {
+      [aiConnType]: [[{ node: '__SyntheticAgent__', type: aiConnType, index: 0 }]],
+    };
+  }
+
+  try {
+    const fullTs = generateWorkflowCode(rawJson);
+    const snippet = extractNodeSnippetFromTs(fullTs, targetNode.name);
+    if (snippet) return snippet;
+  } catch (e) {}
+
+  // Fallback if generateWorkflowCode fails
+  if (isMergeNodeType(targetNode.type)) {
+    const config: Record<string, any> = {
+      name: targetNode.name,
+    };
+    if (targetNode.parameters && Object.keys(targetNode.parameters).length > 0) {
+      config.parameters = targetNode.parameters;
+    }
+    if (targetNode.position) config.position = targetNode.position;
+    if (targetNode.notes) {
+      config.notes = targetNode.notes;
+      if (targetNode.notesInFlow !== undefined) config.notesInFlow = targetNode.notesInFlow;
+    }
+    if (targetNode.disabled !== undefined) config.disabled = targetNode.disabled;
+    if (targetNode.onError) config.onError = targetNode.onError;
+    return `const ${safeName} = merge({\n  version: ${targetNode.typeVersion || 1},\n  config: ${JSON.stringify(config, null, 2)}\n});`;
+  }
+
+  if (isStickyNoteType(targetNode.type)) {
+    const content = targetNode.parameters?.content || '';
+    const options: Record<string, any> = {
+      name: targetNode.name,
+    };
+    if (targetNode.parameters?.color !== undefined) options.color = targetNode.parameters.color;
+    if (targetNode.parameters?.width !== undefined) options.width = targetNode.parameters.width;
+    if (targetNode.parameters?.height !== undefined) options.height = targetNode.parameters.height;
+    if (targetNode.position) options.position = targetNode.position;
+    return `const ${safeName} = sticky(${JSON.stringify(content)}, [], ${JSON.stringify(options, null, 2)});`;
+  }
+
+  let factoryFunc = isTrigger ? 'trigger' : 'node';
+  if (aiConnType && SUBNODE_CONNECTION_TO_BUILDER[aiConnType]) {
+    factoryFunc = SUBNODE_CONNECTION_TO_BUILDER[aiConnType];
+  }
+
   const nodeConfig: Record<string, any> = {
     name: targetNode.name,
   };
   if (targetNode.parameters && Object.keys(targetNode.parameters).length > 0) {
     nodeConfig.parameters = targetNode.parameters;
+  }
+  if (targetNode.credentials && Object.keys(targetNode.credentials).length > 0) {
+    nodeConfig.credentials = targetNode.credentials;
   }
   if (targetNode.position) {
     nodeConfig.position = targetNode.position;
@@ -627,30 +815,29 @@ export function generateSingleNodeSnippet(targetNode: InspectNodeResult, isTrigg
   if (targetNode.disabled !== undefined) {
     nodeConfig.disabled = targetNode.disabled;
   }
+  if (targetNode.webhookId) {
+    nodeConfig.webhookId = targetNode.webhookId;
+  }
+  if (targetNode.onError) {
+    nodeConfig.onError = targetNode.onError;
+  }
+  if (targetNode.retryOnFail !== undefined) {
+    nodeConfig.retryOnFail = targetNode.retryOnFail;
+  }
+  if (targetNode.maxTries !== undefined) {
+    nodeConfig.maxTries = targetNode.maxTries;
+  }
+  if (targetNode.waitBetweenTries !== undefined) {
+    nodeConfig.waitBetweenTries = targetNode.waitBetweenTries;
+  }
+  if (targetNode.alwaysOutputData !== undefined) {
+    nodeConfig.alwaysOutputData = targetNode.alwaysOutputData;
+  }
+  if (targetNode.executeOnce !== undefined) {
+    nodeConfig.executeOnce = targetNode.executeOnce;
+  }
 
-  const rawJson = {
-    nodes: [
-      {
-        name: targetNode.name,
-        type: targetNode.type,
-        typeVersion: targetNode.typeVersion || 1,
-        position: targetNode.position || [0, 0],
-        parameters: targetNode.parameters || {},
-        notes: targetNode.notes,
-        notesInFlow: targetNode.notesInFlow,
-        disabled: targetNode.disabled,
-      }
-    ],
-    connections: {}
-  };
-
-  try {
-    const fullTs = generateWorkflowCode(rawJson);
-    const snippet = extractNodeSnippetFromTs(fullTs, targetNode.name);
-    if (snippet) return snippet;
-  } catch (e) {}
-
-  return `const ${safeName} = ${func}({\n  type: '${targetNode.type}',\n  version: ${targetNode.typeVersion || 1},\n  config: ${JSON.stringify(nodeConfig, null, 2)}\n});`;
+  return `const ${safeName} = ${factoryFunc}({\n  type: '${targetNode.type}',\n  version: ${targetNode.typeVersion || 1},\n  config: ${JSON.stringify(nodeConfig, null, 2)}\n});`;
 }
 
 export function formatTopologyOutput(result: InspectWorkflowResult): string {
@@ -910,7 +1097,17 @@ export async function inspectWorkflow(options: InspectWorkflowOptions): Promise<
       const builder = parseWorkflowCodeToBuilder(fullTsCode);
       workflowJson = builder.toJSON();
     } catch (parseErr) {
-      throw new Error(`Failed to parse TypeScript workflow '${target}': ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+      if (/@n8n\/workflow-sdk/.test(fullTsCode)) {
+        try {
+          const stripped = fullTsCode.replace(/(?:^|\n)[ \t]*import\s+(?:type\s+)?(?:[^;'"`]*?\s+from\s+)?['"]@n8n\/workflow-sdk['"][ \t]*;?[ \t]*/g, '\n');
+          const builder = parseWorkflowCodeToBuilder(stripped);
+          workflowJson = builder.toJSON();
+        } catch {
+          throw new Error(`Failed to parse TypeScript workflow '${target}': ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+        }
+      } else {
+        throw new Error(`Failed to parse TypeScript workflow '${target}': ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+      }
     }
   }
 
@@ -966,7 +1163,16 @@ export async function inspectWorkflow(options: InspectWorkflowOptions): Promise<
     const foundRawNode = rawNodes.find(n => (n.name || '').toLowerCase() === targetNodeName.toLowerCase());
     const targetNodeWithParams: InspectNodeResult = {
       ...foundNode,
+      id: foundRawNode?.id,
       parameters: foundRawNode?.parameters,
+      credentials: foundRawNode?.credentials,
+      webhookId: foundRawNode?.webhookId,
+      onError: foundRawNode?.onError,
+      retryOnFail: foundRawNode?.retryOnFail,
+      maxTries: foundRawNode?.maxTries,
+      waitBetweenTries: foundRawNode?.waitBetweenTries,
+      alwaysOutputData: foundRawNode?.alwaysOutputData,
+      executeOnce: foundRawNode?.executeOnce,
     };
 
     const conns = findConnectionsForNode(connections, foundNode.name);
