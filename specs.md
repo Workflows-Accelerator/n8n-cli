@@ -410,6 +410,7 @@ n8ncli feedback <message> [--kind <kind>] [--command <cmd>] [--exit-code <int>] 
 - Delegates to `oc-feedback`, then `oc-cli-feedback`; helper spawn errors (for example `ENOENT`, `EACCES`, `ENOEXEC`) fall through to the next helper, and a signal-killed helper is reported as a failure with exit code `128 + signal`.
 - When no helper can run, the receipt is appended to the JSONL file named by `OC_FEEDBACK_SPOOL_FILE` (if set); missing parent directories are created and symlinked spool paths are refused.
 - Tokens, API keys, passwords, bearer headers, URL credentials, and token-bearing flags are redacted before any helper invocation, output, or spool write.
+- Scrub rules: GitHub/OpenAI/AWS token shapes, `Bearer` values, URL credentials, secret-bearing flags, and JSON secret fields are redacted. A key/value pair is redacted only when its key ends in `TOKEN`, `API_KEY`/`API-KEY`/`APIKEY`, `SECRET`, `PASSWORD`, or `PASSWD` (case-insensitive); the original separator is preserved (`password: [REDACTED]`) and there is no key-length limit. Parsed helper JSON has secret-named keys redacted for string, number, and boolean values, and object keys are scrubbed as text. Scans are single-pass over fixed literals, so they stay linear on adversarial input.
 
 ---
 

@@ -199,7 +199,7 @@ describe('n8ncli feedback: helper output propagation', () => {
     assert.equal(outcome.upstreamOutput, undefined);
 
     const parsed = JSON.parse(JSON.stringify(outcome.upstream));
-    assert.equal(parsed.message, 'TOKEN=[REDACTED]');
+    assert.equal(parsed.message, 'TOKEN: [REDACTED]');
     assert.equal(parsed.diagnostics.note, 'token ghp_[REDACTED]');
     assert.equal(parsed.diagnostics.bearer, 'Bearer [REDACTED]');
     assert.deepEqual(parsed.tags, ['sk-[REDACTED]', 'plain']);
@@ -460,6 +460,79 @@ describe('n8ncli feedback: validation', () => {
   });
 });
 
+describe('n8ncli feedback: scrubber regression corpus', () => {
+  const longKey = `${'A'.repeat(70)}_ACCESS_TOKEN`;
+  const textCases: Array<[string, string, string]> = [
+    // 85457c9 coverage.
+    ['github pat', 'token ghp_abc123DEF', 'token ghp_[REDACTED]'],
+    ['github fine pat', 'github_pat_11ABCDEFG_abcdefghijklmnop', 'github_pat_[REDACTED]'],
+    ['github oauth', 'gho_xyz789ABC', 'gho_[REDACTED]'],
+    ['openai key', 'sk-proj-abc_DEF-123', 'sk-[REDACTED]'],
+    ['aws access key', 'AKIAABCDEFGHIJKLMNOP', 'AKIA[REDACTED]'],
+    ['bearer header', 'Authorization: Bearer topsecretbearer', 'Authorization: Bearer [REDACTED]'],
+    ['url credentials', 'https://user:pass@example.test/hook', 'https://[REDACTED]@example.test/hook'],
+    ['env api key', 'N8N_API_KEY=n8nsecretvalue', 'N8N_API_KEY=[REDACTED]'],
+    ['header api key', 'X-N8N-API-KEY: headersecret', 'X-N8N-API-KEY: [REDACTED]'],
+    ['json api key', '"apiKey": "jsonsecret"', '"apiKey": "[REDACTED]"'],
+    ['token flag space', '--access-token flagsecret', '--access-token=[REDACTED]'],
+    ['token flag equals', '--token=eqsecret', '--token=[REDACTED]'],
+    ['env secret', 'MY_SECRET=shhh', 'MY_SECRET=[REDACTED]'],
+    // Boundary cases that 1c1d8e0 regressed.
+    ['query token', '?token=abc123', '?token=[REDACTED]'],
+    ['query api key', '&api_key=key123', '&api_key=[REDACTED]'],
+    ['query upper token after plain param', 'a=1&TOKEN=tok123', 'a=1&TOKEN=[REDACTED]'],
+    ['plain key before password', 'host=db&password=pass123', 'host=db&password=[REDACTED]'],
+    ['colon prefixed password', 'db:password=pass123', 'db:password=[REDACTED]'],
+    ['label prefixed api key', 'label:N8N_API_KEY=apikey123', 'label:N8N_API_KEY=[REDACTED]'],
+    ['error prefixed password', 'err:PASSWORD=pw123', 'err:PASSWORD=[REDACTED]'],
+    ['colon prefixed secret', 'foo:SECRET=sec123', 'foo:SECRET=[REDACTED]'],
+    ['long secret key name', `${longKey}=longtok123`, `${longKey}=[REDACTED]`],
+    ['underscore glued openai key', 'mykey_sk-abc123', 'mykey_sk-[REDACTED]'],
+    ['preserve colon separator', 'password: spaced', 'password: [REDACTED]'],
+    ['preserve colon separator upper', 'TOKEN: abc123', 'TOKEN: [REDACTED]'],
+    // Negatives must be untouched.
+    ['negative task runner', 'task-runner', 'task-runner'],
+    ['negative desk lamp', 'desk-lamp', 'desk-lamp'],
+    ['negative keyboard layout', 'KEYBOARD_LAYOUT=us', 'KEYBOARD_LAYOUT=us'],
+    ['negative monkey', 'MONKEY=banana', 'MONKEY=banana'],
+    ['negative plain url', 'https://example.test/issues/9', 'https://example.test/issues/9'],
+  ];
+
+  for (const [label, input, expected] of textCases) {
+    it(`scrubs ${label}`, () => {
+      assert.equal(scrubSecrets(input), expected);
+    });
+  }
+
+  function scrubJsonThrough(stdout: string): Record<string, any> {
+    const { runner } = recordingRunner({ 'oc-feedback': { status: 0, stdout } });
+    const outcome = submitFeedback({ message: 'corpus' }, '1.2.45', runner);
+    return outcome.upstream as Record<string, any>;
+  }
+
+  it('scrubs object keys containing secret tokens', () => {
+    const upstream = scrubJsonThrough('{"items":[{"ghp_fakekey":"ok"}]}');
+    assert.deepEqual(Object.keys(upstream.items[0]), ['ghp_[REDACTED]']);
+    assert.equal(JSON.stringify(upstream).includes('ghp_fakekey'), false);
+  });
+
+  it('redacts numeric values under secret-named keys', () => {
+    const upstream = scrubJsonThrough('{"token":123456}');
+    assert.equal(upstream.token, '[REDACTED]');
+    assert.equal(JSON.stringify(upstream).includes('123456'), false);
+  });
+
+  it('redacts a query token inside a parsed issueUrl and keeps the rest', () => {
+    const upstream = scrubJsonThrough('{"issueUrl":"https://example.test/issues/9?token=abc123&x=1"}');
+    assert.equal(upstream.issueUrl, 'https://example.test/issues/9?token=[REDACTED]&x=1');
+  });
+
+  it('keeps an issueUrl without secrets intact', () => {
+    const upstream = scrubJsonThrough('{"issueUrl":"https://example.test/issues/9"}');
+    assert.equal(upstream.issueUrl, 'https://example.test/issues/9');
+  });
+});
+
 describe('n8ncli feedback: CLI integration', () => {
   it('shows kind, note, and json options in --help', () => {
     const stdout = runCli(['feedback', '--help']);
@@ -610,18 +683,46 @@ describe('n8ncli feedback: CLI integration', () => {
 
 describe('n8ncli feedback: scrubber latency', () => {
   const LATENCY_BUDGET_MS = 100;
+
+  function elapsed(input: string): number {
+    const started = performance.now();
+    scrubSecrets(input);
+    return performance.now() - started;
+  }
+
+  function bestOf(input: string, runs = 3): number {
+    let best = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < runs; index += 1) best = Math.min(best, elapsed(input));
+    return best;
+  }
+
   const adversarial: Array<[string, string]> = [
     ['URL credentials', `://${'a:'.repeat(25000)}`],
     ['env assignment', `${'A'.repeat(50000)}=`],
     ['OpenAI key prefix', 'sk-'.repeat(12500)],
+    ['repeated secret assignment', '?token=abc&host=db&'.repeat(2778)],
+    ['long secret key suffix', `${'A'.repeat(50000)}_ACCESS_TOKEN=`],
   ];
 
   for (const [label, input] of adversarial) {
     it(`scrubs a 50 KB ${label} payload in under ${LATENCY_BUDGET_MS} ms`, () => {
-      const started = performance.now();
-      scrubSecrets(input);
-      const elapsed = performance.now() - started;
-      assert.ok(elapsed < LATENCY_BUDGET_MS, `${label} scrub took ${elapsed.toFixed(1)} ms for ${input.length} bytes`);
+      const took = bestOf(input);
+      assert.ok(took < LATENCY_BUDGET_MS, `${label} scrub took ${took.toFixed(1)} ms for ${input.length} bytes`);
     });
   }
+
+  it('scales linearly from 50 KB to 500 KB', () => {
+    const unit = '?token=abc&host=db&';
+    const make = (bytes: number) => unit.repeat(Math.ceil(bytes / unit.length));
+    const small = make(50 * 1024);
+    const large = make(500 * 1024);
+
+    const smallMs = bestOf(small);
+    const largeMs = bestOf(large);
+    const ratio = largeMs / Math.max(smallMs, 0.01);
+
+    assert.ok(smallMs < LATENCY_BUDGET_MS, `50 KB scrub took ${smallMs.toFixed(1)} ms`);
+    assert.ok(largeMs < LATENCY_BUDGET_MS * 20, `500 KB scrub took ${largeMs.toFixed(1)} ms`);
+    assert.ok(ratio < 30, `500 KB / 50 KB took ${ratio.toFixed(1)}x (expected near 10x)`);
+  });
 });

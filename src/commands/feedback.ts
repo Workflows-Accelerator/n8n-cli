@@ -64,8 +64,8 @@ const GITHUB_PAT = /ghp_[A-Za-z0-9]+/g;
 const GITHUB_FINE_PAT = /github_pat_[A-Za-z0-9_]+/g;
 /** GitHub OAuth token. */
 const GITHUB_OAUTH = /gho_[A-Za-z0-9]+/g;
-/** OpenAI-style key; the lookbehind keeps words such as "task-runner" and "desk-lamp" intact. */
-const OPENAI_KEY = /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]+/g;
+/** OpenAI-style key; the lookbehind keeps words such as "task-runner" and "desk-lamp" intact but still catches "mykey_sk-". */
+const OPENAI_KEY = /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]+/g;
 /** AWS access key ID. */
 const AWS_ACCESS_KEY = /AKIA[0-9A-Z]{16}/g;
 /** URL credentials; both classes stop at ":" and "@", so the scan never backtracks across the pair. */
@@ -74,14 +74,16 @@ const URL_CREDENTIALS = /:\/\/[^/\s@:]*:[^/\s@]+@/g;
 const BEARER_VALUE = /Bearer\s+\S+/gi;
 /** Token-bearing command line flag. */
 const SECRET_FLAG = /(--(?:access-token|api-key|token|password))(?:\s+|=)\S+/gi;
-/** JSON-style secret field, quoted so standalone words are untouched. */
-const JSON_SECRET_FIELD = /("(?:apiKey|accessToken|token|secret|password)"\s*:\s*)"[^"]*"/gi;
-/** Key/value assignment; the key is length-bounded so backtracking per position stays constant. */
-const ENV_ASSIGNMENT = /\b([A-Za-z0-9_-]{1,64})\s*[:=]\s*(\S+)/g;
-/** Key suffixes whose assigned value must be redacted. */
-const SECRET_KEY_SUFFIXES = ['TOKEN', 'API_KEY', 'API-KEY', 'SECRET', 'PASSWORD'];
-/** JSON field names whose whole string value is a secret. */
-const SECRET_FIELD_NAMES = ['apikey', 'accesstoken', 'token', 'secret', 'password'];
+/** JSON-style secret field; the value may be a string, number or boolean. */
+const JSON_SECRET_FIELD = /("(?:apiKey|accessToken|token|secret|password)"\s*:\s*)(?:"[^"]*"|-?\d+(?:\.\d+)?|true|false)/gi;
+/**
+ * Key/value assignment. Only keys that END in a secret suffix match, and the
+ * alternation is a fixed set of literals with no nested quantifier, so the scan
+ * stays linear. Matching starts at the suffix, so the key prefix is preserved.
+ */
+const SECRET_ASSIGNMENT = /(TOKEN|API_KEY|API-KEY|APIKEY|SECRET|PASSWORD|PASSWD)(\s*[:=]\s*)([^\s&;?#]+)/gi;
+/** Key suffix whose value is a secret, anchored at the end of a parsed JSON key. */
+const SECRET_KEY_SUFFIX = /(?:TOKEN|API_KEY|API-KEY|APIKEY|SECRET|PASSWORD|PASSWD)$/i;
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [GITHUB_PAT, 'ghp_[REDACTED]'],
@@ -93,17 +95,16 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [BEARER_VALUE, 'Bearer [REDACTED]'],
   [SECRET_FLAG, '$1=[REDACTED]'],
   [JSON_SECRET_FIELD, '$1"[REDACTED]"'],
+  [SECRET_ASSIGNMENT, '$1$2[REDACTED]'],
 ];
 
-/** True when an assignment key names a secret, for example N8N_API_KEY or MY_SECRET. */
-function isSecretKey(key: string): boolean {
-  const upper = key.toUpperCase();
-  return SECRET_KEY_SUFFIXES.some(suffix => upper.endsWith(suffix));
+/** True when a field name ends in a secret suffix, for example N8N_API_KEY or MY_SECRET. */
+function isSecretKeyName(key: string): boolean {
+  return SECRET_KEY_SUFFIX.test(key);
 }
 
 export function scrubSecrets(text: string): string {
-  const scrubbed = SECRET_PATTERNS.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
-  return scrubbed.replace(ENV_ASSIGNMENT, (match, key: string) => (isSecretKey(key) ? `${key}=[REDACTED]` : match));
+  return SECRET_PATTERNS.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
 }
 
 export function validateKind(kind: string): FeedbackKind {
@@ -140,15 +141,16 @@ function parseUpstream(stdout: string): Record<string, unknown> | undefined {
   return undefined;
 }
 
-/** Scrub every string leaf of parsed helper JSON, leaving object keys intact. */
+/** Scrub every string leaf and key of parsed helper JSON; secret-named fields also drop number/boolean values. */
 function scrubJson(value: unknown): unknown {
   if (typeof value === 'string') return scrubSecrets(value);
   if (Array.isArray(value)) return value.map(scrubJson);
   if (value && typeof value === 'object') {
     const scrubbed: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-      const isSecretField = SECRET_FIELD_NAMES.includes(key.toLowerCase()) && typeof nested === 'string';
-      scrubbed[key] = isSecretField ? '[REDACTED]' : scrubJson(nested);
+      const secretField = isSecretKeyName(key)
+        && (typeof nested === 'string' || typeof nested === 'number' || typeof nested === 'boolean');
+      scrubbed[scrubSecrets(key)] = secretField ? '[REDACTED]' : scrubJson(nested);
     }
     return scrubbed;
   }
