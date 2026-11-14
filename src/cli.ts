@@ -30,6 +30,7 @@ import { logsCommand } from './commands/logs.js';
 import { debugCommand } from './commands/debug.js';
 import { webhooksCommand } from './commands/webhooks.js';
 import { updateCommand } from './commands/update.js';
+import { feedbackCommand } from './commands/feedback.js';
 import { checkForUpdate, displayUpdateNotification } from './update-check.js';
 
 
@@ -98,6 +99,7 @@ liveCommand(program);
 datatablesCommand(program);
 webhooksCommand(program);
 updateCommand(program);
+feedbackCommand(program);
 
 
 // Parse arguments asynchronously

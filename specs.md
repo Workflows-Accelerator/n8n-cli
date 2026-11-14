@@ -396,6 +396,22 @@ n8ncli changelog [--all] [--limit <n>] [--from <version>]
 - **`--limit <n>`**: Limits the number of recent release entries shown (defaults to `5`).
 - **`--all`**: Displays the full version changelog history.
 
+### `n8ncli feedback`
+```bash
+n8ncli feedback <message> [--kind <kind>] [--command <cmd>] [--exit-code <int>] [--note <text>] [--json]
+```
+- Sends bug reports, missing capability requests, or documentation feedback to the `Workflows-Accelerator/n8n-cli` maintainers.
+- **`--kind <kind>`**: One of `bug` (default), `missing-capability`, or `docs`.
+- **`--command <cmd>`**: Records the command that triggered the feedback.
+- **`--exit-code <int>`**: Records the failing command's exit code; a non-integer value is a usage error and exits `2`.
+- **`--note <text>`**: Adds free-form context to the report.
+- **`--json`**: Emits a structured receipt including delivery channel, any upstream helper payload or issue URL, raw non-JSON helper output as `upstreamOutput`, and error details on failure.
+- Helper stdout is JSON-parsed before redaction so its structure and `issueUrl` survive; non-JSON stdout is redacted as text, and redacted helper warnings on stderr are forwarded when the helper exits `0` or without a status.
+- Delegates to `oc-feedback`, then `oc-cli-feedback`; helper spawn errors (for example `ENOENT`, `EACCES`, `ENOEXEC`) fall through to the next helper, and a signal-killed helper is reported as a failure with exit code `128 + signal`.
+- When no helper can run, the receipt is appended to the JSONL file named by `OC_FEEDBACK_SPOOL_FILE` (if set); missing parent directories are created and symlinked spool paths are refused.
+- Tokens, API keys, passwords, bearer headers, URL credentials, and token-bearing flags are redacted before any helper invocation, output, or spool write.
+- Scrub rules: GitHub/OpenAI/AWS token shapes, `Bearer` values, URL credentials, secret-bearing flags, and JSON secret fields are redacted. A key/value pair is redacted only when its key ends in `TOKEN`, `API_KEY`/`API-KEY`/`APIKEY`, `SECRET`, `PASSWORD`, or `PASSWD` (case-insensitive); the original separator is preserved (`password: [REDACTED]`) and there is no key-length limit. Parsed helper JSON has secret-named keys redacted for string, number, and boolean values, and object keys are scrubbed as text. Scans are single-pass over fixed literals, so they stay linear on adversarial input.
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies
