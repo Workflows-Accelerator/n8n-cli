@@ -396,6 +396,20 @@ n8ncli changelog [--all] [--limit <n>] [--from <version>]
 - **`--limit <n>`**: Limits the number of recent release entries shown (defaults to `5`).
 - **`--all`**: Displays the full version changelog history.
 
+### `n8ncli feedback`
+```bash
+n8ncli feedback <message> [--kind <kind>] [--command <cmd>] [--exit-code <int>] [--note <text>] [--json]
+```
+- Sends bug reports, missing capability requests, or documentation feedback to the `Workflows-Accelerator/n8n-cli` maintainers.
+- **`--kind <kind>`**: One of `bug` (default), `missing-capability`, or `docs`.
+- **`--command <cmd>`**: Records the command that triggered the feedback.
+- **`--exit-code <int>`**: Records the failing command's exit code; a non-integer value is a usage error and exits `2`.
+- **`--note <text>`**: Adds free-form context to the report.
+- **`--json`**: Emits a structured receipt including delivery channel, any upstream helper payload or issue URL, and error details on failure.
+- Delegates to `oc-feedback`, then `oc-cli-feedback`; helper spawn errors (for example `ENOENT`, `EACCES`, `ENOEXEC`) fall through to the next helper, and a signal-killed helper is reported as a failure with exit code `128 + signal`.
+- When no helper can run, the receipt is appended to the JSONL file named by `OC_FEEDBACK_SPOOL_FILE` (if set); missing parent directories are created and symlinked spool paths are refused.
+- Tokens, API keys, passwords, bearer headers, URL credentials, and token-bearing flags are redacted before any helper invocation, output, or spool write.
+
 ---
 
 ## 5. Sync & Conflict Resolution Policies
