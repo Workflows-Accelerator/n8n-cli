@@ -48,6 +48,8 @@ export interface FeedbackOutcome {
   upstream?: Record<string, unknown>;
   issueUrl?: string;
   upstreamOutput?: string;
+  helperStatus?: number | null;
+  helperStderr?: string;
   error?: string;
   spooled: boolean;
   spoolWarning?: string;
@@ -56,24 +58,52 @@ export interface FeedbackOutcome {
 export const defaultRunner: Runner = (command, args) =>
   spawnSync(command, args, { shell: false, encoding: 'utf-8' });
 
+/** GitHub classic personal access token. */
+const GITHUB_PAT = /ghp_[A-Za-z0-9]+/g;
+/** GitHub fine-grained personal access token. */
+const GITHUB_FINE_PAT = /github_pat_[A-Za-z0-9_]+/g;
+/** GitHub OAuth token. */
+const GITHUB_OAUTH = /gho_[A-Za-z0-9]+/g;
+/** OpenAI-style key; the lookbehind keeps words such as "task-runner" and "desk-lamp" intact. */
+const OPENAI_KEY = /(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]+/g;
+/** AWS access key ID. */
+const AWS_ACCESS_KEY = /AKIA[0-9A-Z]{16}/g;
+/** URL credentials; both classes stop at ":" and "@", so the scan never backtracks across the pair. */
+const URL_CREDENTIALS = /:\/\/[^/\s@:]*:[^/\s@]+@/g;
+/** Bearer authorization value. */
+const BEARER_VALUE = /Bearer\s+\S+/gi;
+/** Token-bearing command line flag. */
+const SECRET_FLAG = /(--(?:access-token|api-key|token|password))(?:\s+|=)\S+/gi;
+/** JSON-style secret field, quoted so standalone words are untouched. */
+const JSON_SECRET_FIELD = /("(?:apiKey|accessToken|token|secret|password)"\s*:\s*)"[^"]*"/gi;
+/** Key/value assignment; the key is length-bounded so backtracking per position stays constant. */
+const ENV_ASSIGNMENT = /\b([A-Za-z0-9_-]{1,64})\s*[:=]\s*(\S+)/g;
+/** Key suffixes whose assigned value must be redacted. */
+const SECRET_KEY_SUFFIXES = ['TOKEN', 'API_KEY', 'API-KEY', 'SECRET', 'PASSWORD'];
+/** JSON field names whose whole string value is a secret. */
+const SECRET_FIELD_NAMES = ['apikey', 'accesstoken', 'token', 'secret', 'password'];
+
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/ghp_[A-Za-z0-9]+/g, 'ghp_[REDACTED]'],
-  [/github_pat_[A-Za-z0-9_]+/g, 'github_pat_[REDACTED]'],
-  [/gho_[A-Za-z0-9]+/g, 'gho_[REDACTED]'],
-  [/sk-[A-Za-z0-9_-]+/g, 'sk-[REDACTED]'],
-  [/AKIA[0-9A-Z]{16}/g, 'AKIA[REDACTED]'],
-  [/:\/\/[^/\s@]*:[^/\s@]+@/g, '://[REDACTED]@'],
-  [/Bearer\s+\S+/gi, 'Bearer [REDACTED]'],
-  [/(--(?:access-token|api-key|token|password))(?:\s+|=)\S+/gi, '$1=[REDACTED]'],
-  [/("(?:apiKey|accessToken|token|secret|password)"\s*:\s*)"[^"]*"/gi, '$1"[REDACTED]"'],
-  [
-    /((?:N8N_API_KEY|X-N8N-API-KEY|[A-Za-z0-9_-]*(?:TOKEN|API_KEY|API-KEY|SECRET|PASSWORD)))\s*[:=]\s*\S+/gi,
-    '$1=[REDACTED]',
-  ],
+  [GITHUB_PAT, 'ghp_[REDACTED]'],
+  [GITHUB_FINE_PAT, 'github_pat_[REDACTED]'],
+  [GITHUB_OAUTH, 'gho_[REDACTED]'],
+  [OPENAI_KEY, 'sk-[REDACTED]'],
+  [AWS_ACCESS_KEY, 'AKIA[REDACTED]'],
+  [URL_CREDENTIALS, '://[REDACTED]@'],
+  [BEARER_VALUE, 'Bearer [REDACTED]'],
+  [SECRET_FLAG, '$1=[REDACTED]'],
+  [JSON_SECRET_FIELD, '$1"[REDACTED]"'],
 ];
 
+/** True when an assignment key names a secret, for example N8N_API_KEY or MY_SECRET. */
+function isSecretKey(key: string): boolean {
+  const upper = key.toUpperCase();
+  return SECRET_KEY_SUFFIXES.some(suffix => upper.endsWith(suffix));
+}
+
 export function scrubSecrets(text: string): string {
-  return SECRET_PATTERNS.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
+  const scrubbed = SECRET_PATTERNS.reduce((value, [pattern, replacement]) => value.replace(pattern, replacement), text);
+  return scrubbed.replace(ENV_ASSIGNMENT, (match, key: string) => (isSecretKey(key) ? `${key}=[REDACTED]` : match));
 }
 
 export function validateKind(kind: string): FeedbackKind {
@@ -108,6 +138,21 @@ function parseUpstream(stdout: string): Record<string, unknown> | undefined {
     return undefined;
   }
   return undefined;
+}
+
+/** Scrub every string leaf of parsed helper JSON, leaving object keys intact. */
+function scrubJson(value: unknown): unknown {
+  if (typeof value === 'string') return scrubSecrets(value);
+  if (Array.isArray(value)) return value.map(scrubJson);
+  if (value && typeof value === 'object') {
+    const scrubbed: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      const isSecretField = SECRET_FIELD_NAMES.includes(key.toLowerCase()) && typeof nested === 'string';
+      scrubbed[key] = isSecretField ? '[REDACTED]' : scrubJson(nested);
+    }
+    return scrubbed;
+  }
+  return value;
 }
 
 function spoolReceipt(receipt: FeedbackReceipt): { spooled: boolean; spoolWarning?: string } {
@@ -169,10 +214,13 @@ export function submitFeedback(input: FeedbackInput, version: string, runner: Ru
     const result = runner(binary, args);
     if (result.error) continue;
 
-    const stdout = scrubSecrets(asText(result.stdout));
-    const stderr = scrubSecrets(asText(result.stderr));
-    const upstream = parseUpstream(stdout);
+    const rawStdout = asText(result.stdout);
+    const helperStderr = scrubSecrets(asText(result.stderr)).trim();
+    const parsed = parseUpstream(rawStdout);
+    const upstream = parsed ? (scrubJson(parsed) as Record<string, unknown>) : undefined;
+    const upstreamOutput = parsed ? undefined : scrubSecrets(rawStdout).trim() || undefined;
     const issueUrl = typeof upstream?.issueUrl === 'string' ? upstream.issueUrl : undefined;
+    const shared = { helperStatus: result.status, ...(helperStderr ? { helperStderr } : {}) };
 
     if (result.status === null) {
       const reason = result.signal ? `signal ${result.signal}` : 'no exit status';
@@ -183,8 +231,9 @@ export function submitFeedback(input: FeedbackInput, version: string, runner: Ru
         channel: binary,
         error: `Helper ${binary} terminated by ${reason}`,
         spooled: false,
+        ...shared,
         ...(upstream ? { upstream } : {}),
-        ...(stdout.trim() ? { upstreamOutput: stdout.trim() } : {}),
+        ...(upstreamOutput ? { upstreamOutput } : {}),
       };
     }
 
@@ -195,13 +244,14 @@ export function submitFeedback(input: FeedbackInput, version: string, runner: Ru
         delivered: true,
         channel: binary,
         spooled: false,
+        ...shared,
         ...(upstream ? { upstream } : {}),
         ...(issueUrl ? { issueUrl } : {}),
-        ...(!upstream && stdout.trim() ? { upstreamOutput: stdout.trim() } : {}),
+        ...(upstreamOutput ? { upstreamOutput } : {}),
       };
     }
 
-    const detail = stderr.trim() || stdout.trim() || `Helper ${binary} exited with status ${result.status}`;
+    const detail = helperStderr || upstreamOutput || `Helper ${binary} exited with status ${result.status}`;
     return {
       receipt,
       exitCode: result.status,
@@ -209,8 +259,9 @@ export function submitFeedback(input: FeedbackInput, version: string, runner: Ru
       channel: binary,
       error: detail,
       spooled: false,
+      ...shared,
       ...(upstream ? { upstream } : {}),
-      ...(stdout.trim() ? { upstreamOutput: stdout.trim() } : {}),
+      ...(upstreamOutput ? { upstreamOutput } : {}),
     };
   }
 
@@ -247,12 +298,18 @@ export function feedbackCommand(program: Command) {
           ...outcome.receipt,
           ...(outcome.upstream ? { upstream: outcome.upstream } : {}),
           ...(outcome.issueUrl ? { issueUrl: outcome.issueUrl } : {}),
+          ...(outcome.upstreamOutput ? { upstreamOutput: outcome.upstreamOutput } : {}),
           ...(outcome.error ? { error: outcome.error } : {}),
           delivered: outcome.delivered,
           channel: outcome.channel,
           spooled: outcome.spooled,
           ...(outcome.spoolWarning ? { spoolWarning: outcome.spoolWarning } : {}),
         };
+
+        const helperFinished = outcome.helperStatus === 0 || outcome.helperStatus === null;
+        if (helperFinished && outcome.helperStderr && outcome.helperStderr !== outcome.error) {
+          process.stderr.write(`${outcome.helperStderr}\n`);
+        }
 
         if (json) {
           console.log(JSON.stringify(payload, null, 2));

@@ -405,7 +405,8 @@ n8ncli feedback <message> [--kind <kind>] [--command <cmd>] [--exit-code <int>] 
 - **`--command <cmd>`**: Records the command that triggered the feedback.
 - **`--exit-code <int>`**: Records the failing command's exit code; a non-integer value is a usage error and exits `2`.
 - **`--note <text>`**: Adds free-form context to the report.
-- **`--json`**: Emits a structured receipt including delivery channel, any upstream helper payload or issue URL, and error details on failure.
+- **`--json`**: Emits a structured receipt including delivery channel, any upstream helper payload or issue URL, raw non-JSON helper output as `upstreamOutput`, and error details on failure.
+- Helper stdout is JSON-parsed before redaction so its structure and `issueUrl` survive; non-JSON stdout is redacted as text, and redacted helper warnings on stderr are forwarded when the helper exits `0` or without a status.
 - Delegates to `oc-feedback`, then `oc-cli-feedback`; helper spawn errors (for example `ENOENT`, `EACCES`, `ENOEXEC`) fall through to the next helper, and a signal-killed helper is reported as a failure with exit code `128 + signal`.
 - When no helper can run, the receipt is appended to the JSONL file named by `OC_FEEDBACK_SPOOL_FILE` (if set); missing parent directories are created and symlinked spool paths are refused.
 - Tokens, API keys, passwords, bearer headers, URL credentials, and token-bearing flags are redacted before any helper invocation, output, or spool write.

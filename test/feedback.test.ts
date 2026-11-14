@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import {
   KINDS,
   REPO,
@@ -38,6 +38,13 @@ function argOf(args: string[], flag: string): string | undefined {
 
 function runCli(args: string[], env: NodeJS.ProcessEnv = process.env): string {
   return execFileSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
+    encoding: 'utf-8',
+    env,
+  });
+}
+
+function runCliCaptured(args: string[], env: NodeJS.ProcessEnv = process.env) {
+  return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
     encoding: 'utf-8',
     env,
   });
@@ -172,6 +179,32 @@ describe('n8ncli feedback: helper output propagation', () => {
     assert.equal(outcome.issueUrl, 'https://example.test/issues/7');
     assert.equal(outcome.upstream?.id, 7);
     assert.equal(outcome.upstreamOutput, undefined);
+  });
+
+  it('parses raw helper JSON before scrubbing so structure and issueUrl survive', () => {
+    const stdout = JSON.stringify({
+      issueUrl: 'https://example.test/issues/9',
+      id: 9,
+      message: 'TOKEN: abc123',
+      diagnostics: { note: 'token ghp_jsonleak1', bearer: 'Bearer abc.def' },
+      tags: ['sk-live_1', 'plain'],
+    });
+    const { runner } = recordingRunner({ 'oc-feedback': { status: 0, stdout: `${stdout}\n` } });
+
+    const outcome = submitFeedback({ message: 'json structure' }, '1.2.45', runner);
+
+    assert.equal(outcome.delivered, true);
+    assert.equal(outcome.issueUrl, 'https://example.test/issues/9');
+    assert.equal(outcome.upstream?.id, 9);
+    assert.equal(outcome.upstreamOutput, undefined);
+
+    const parsed = JSON.parse(JSON.stringify(outcome.upstream));
+    assert.equal(parsed.message, 'TOKEN=[REDACTED]');
+    assert.equal(parsed.diagnostics.note, 'token ghp_[REDACTED]');
+    assert.equal(parsed.diagnostics.bearer, 'Bearer [REDACTED]');
+    assert.deepEqual(parsed.tags, ['sk-[REDACTED]', 'plain']);
+    assert.equal(JSON.stringify(outcome).includes('ghp_jsonleak1'), false);
+    assert.equal(JSON.stringify(outcome).includes('abc123'), false);
   });
 
   it('keeps non-JSON helper stdout as trimmed text', () => {
@@ -419,6 +452,12 @@ describe('n8ncli feedback: validation', () => {
     assert.equal(scrubSecrets('--access-token abc'), '--access-token=[REDACTED]');
     assert.equal(scrubSecrets('no secrets here'), 'no secrets here');
   });
+
+  it('anchors the OpenAI-style key pattern so ordinary words are untouched', () => {
+    assert.equal(scrubSecrets('task-runner and desk-lamp'), 'task-runner and desk-lamp');
+    assert.equal(scrubSecrets('sk-abc123'), 'sk-[REDACTED]');
+    assert.equal(scrubSecrets('key=sk-abc123'), 'key=sk-[REDACTED]');
+  });
 });
 
 describe('n8ncli feedback: CLI integration', () => {
@@ -466,6 +505,49 @@ describe('n8ncli feedback: CLI integration', () => {
       });
       assert.ok(stdout.includes('Report queued as #42.'));
       assert.equal(stdout.includes('Feedback delivered via'), false);
+    } finally {
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('includes upstreamOutput in the --json payload for non-JSON helper stdout', () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8ncli-feedback-json-text-'));
+    try {
+      const helper = path.join(binDir, 'oc-feedback');
+      fs.writeFileSync(helper, '#!/bin/sh\nprintf \'%s\\n\' "Report queued as #77."\n');
+      fs.chmodSync(helper, 0o755);
+      const stdout = runCli(['feedback', 'hello', '--json'], {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        OC_FEEDBACK_SPOOL_FILE: '',
+      });
+      const parsed = JSON.parse(stdout.trim());
+      assert.equal(parsed.delivered, true);
+      assert.equal(parsed.upstreamOutput, 'Report queued as #77.');
+      assert.equal(parsed.upstream, undefined);
+    } finally {
+      fs.rmSync(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards scrubbed helper stderr when the helper succeeds', () => {
+    const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'n8ncli-feedback-warn-'));
+    try {
+      const helper = path.join(binDir, 'oc-feedback');
+      fs.writeFileSync(
+        helper,
+        '#!/bin/sh\necho "warn: retry later with ghp_leakedtoken" >&2\necho "Report queued as #78."\n',
+      );
+      fs.chmodSync(helper, 0o755);
+      const result = runCliCaptured(['feedback', 'hello'], {
+        ...process.env,
+        PATH: `${binDir}:${process.env.PATH ?? ''}`,
+        OC_FEEDBACK_SPOOL_FILE: '',
+      });
+      assert.equal(result.status, 0);
+      assert.ok(String(result.stdout).includes('Report queued as #78.'));
+      assert.ok(String(result.stderr).includes('warn: retry later with ghp_[REDACTED]'));
+      assert.equal(String(result.stderr).includes('ghp_leakedtoken'), false);
     } finally {
       fs.rmSync(binDir, { recursive: true, force: true });
     }
@@ -524,4 +606,22 @@ describe('n8ncli feedback: CLI integration', () => {
       assert.ok(String(err.stderr).includes('Invalid --kind "nonsense"'));
     }
   });
+});
+
+describe('n8ncli feedback: scrubber latency', () => {
+  const LATENCY_BUDGET_MS = 100;
+  const adversarial: Array<[string, string]> = [
+    ['URL credentials', `://${'a:'.repeat(25000)}`],
+    ['env assignment', `${'A'.repeat(50000)}=`],
+    ['OpenAI key prefix', 'sk-'.repeat(12500)],
+  ];
+
+  for (const [label, input] of adversarial) {
+    it(`scrubs a 50 KB ${label} payload in under ${LATENCY_BUDGET_MS} ms`, () => {
+      const started = performance.now();
+      scrubSecrets(input);
+      const elapsed = performance.now() - started;
+      assert.ok(elapsed < LATENCY_BUDGET_MS, `${label} scrub took ${elapsed.toFixed(1)} ms for ${input.length} bytes`);
+    });
+  }
 });
